@@ -70,7 +70,7 @@
             </StackPanel>
 
             <!-- Brak kamery: duża informacja i możliwość rozmowy bez obrazu -->
-            <Border x:Name="NoCameraPanel" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center"
+            <Border x:Name="NoCameraPanel" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="20,0,20,70"
                     Background="#F2102A43" BorderBrush="#FFC857" BorderThickness="6" CornerRadius="36" Padding="56,44">
                 <StackPanel Width="1000">
                     <TextBlock Text="Nie wykryto kamery" Foreground="#FFC857" FontSize="72" FontWeight="Bold" TextAlignment="Center"/>

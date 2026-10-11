@@ -22,7 +22,7 @@ foreach ($size in $Sizes) {
             'nocamera' { $a += '--nocamera', '--select' }
             'incoming' { $a += '--incoming' }
             'settings' { $a += '--settings', '--select' }
-            'banner' { $a += '--select', '--banner', 'Nieodebrane połączenie od: Córka Kasia (14:20).' }
+            'banner' { $a += '--select', '--banner', '"Nieodebrane połączenie od: Córka Kasia (14:20)."' }
         }
         Start-Process $Exe -ArgumentList $a -Wait
         Write-Host "$scene $size -> $out"

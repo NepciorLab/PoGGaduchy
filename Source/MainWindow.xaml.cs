@@ -138,7 +138,8 @@ public partial class MainWindow : Window
         var sb = 0.5 * Math.Max(k, 1.0);
         SettingsButton.LayoutTransform = new ScaleTransform(sb, sb);
         // Panel "brak kamery" ma naturalną szerokość ok. 1130 px – zmieszczamy go w prawej kolumnie.
-        var cam = Math.Min(k, (paneWidth - 40) / 1130.0);
+        // ...i pod przyciskiem X (128 + marginesy), żeby nie nachodził na niego na małych ekranach.
+        var cam = Math.Max(0.3, Math.Min(Math.Min(k, (paneWidth - 40) / 1130.0), (paneHeight - 250) / 700.0));
         NoCameraPanel.LayoutTransform = new ScaleTransform(cam, cam);
     }
 

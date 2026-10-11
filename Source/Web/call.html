@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rozmowa</title>
+<style>
+  :root { --red: #D62828; --green: #2EA043; --gold: #FFC857; --navy: #16385B; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0B1B2B; color: #fff;
+               font-family: "Segoe UI", system-ui, sans-serif; user-select: none; cursor: default; }
+  #remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; display: none; }
+  #avatarView { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                background: linear-gradient(135deg, #16385B, #2C6A9E); gap: 3vh; padding-bottom: 6vh; }
+  #avatar { width: min(46vh, 60vw); height: min(46vh, 60vw); border-radius: 12%; border: 0.8vh solid #fff; background: #4C7FB0 center/cover no-repeat;
+            display: flex; align-items: center; justify-content: center; font-size: 22vh; font-weight: 700; }
+  #peerName { font-size: 7vh; font-weight: 700; text-align: center; max-width: 90vw; line-height: 1.15; }
+  #status { position: absolute; left: 0; right: 0; top: 3vh; text-align: center; font-size: 5vh; font-weight: 600; color: var(--gold);
+            text-shadow: 0 0.3vh 1.2vh rgba(0,0,0,.8); padding: 0 4vw; pointer-events: none; }
+  #chip { position: absolute; left: 2vw; top: 2vh; background: rgba(11, 27, 43, .72); border-radius: 2vh; padding: 0.8vh 2vh; font-size: 4vh; font-weight: 600;
+          display: none; max-width: 60vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #local { position: absolute; left: 2vw; bottom: 3vh; width: 26vw; max-width: 46vh; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 2vh;
+           border: 0.5vh solid #fff; background: #000; transform: scaleX(-1); display: none; box-shadow: 0 0.5vh 2vh rgba(0,0,0,.6); }
+  #hangup { position: absolute; right: 3vw; bottom: 3vh; width: clamp(110px, 24vh, 240px); height: clamp(110px, 24vh, 240px); border-radius: 50%;
+            background: var(--red); border: 0 solid var(--gold); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+            box-shadow: 0 0.6vh 2.4vh rgba(0,0,0,.6); }
+  #hangup:hover, #hangup:focus-visible { border-width: 1vh; outline: none; }
+  #hangup:active { opacity: .85; }
+  #hangup span { font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; color: #fff; font-size: clamp(60px, 13vh, 130px); transform: rotate(135deg); line-height: 1; }
+  #notice { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(11, 27, 43, .92); border: 0.6vh solid var(--gold);
+            border-radius: 4vh; padding: 4vh 5vw; font-size: 5vh; text-align: center; max-width: 80vw; display: none; line-height: 1.25; }
+</style>
+</head>
+<body>
+<video id="remote" autoplay playsinline></video>
+<div id="avatarView"><div id="avatar"></div><div id="peerName"></div></div>
+<div id="chip"></div>
+<video id="local" autoplay playsinline muted></video>
+<div id="status"></div>
+<div id="notice"></div>
+<button id="hangup" aria-label="Rozłącz" title="Rozłącz"><span>&#xE717;</span></button>
+
+<script>
+"use strict";
+const host = window.chrome && window.chrome.webview;
+const $ = (id) => document.getElementById(id);
+const post = (o) => { try { host.postMessage(o); } catch (e) { /* poza programem */ } };
+const log = (m) => post({ type: "log", msg: String(m) });
+
+let pc = null, localStream = null, role = "caller", opts = {}, remoteStream = new MediaStream();
+let pendingIce = [], haveRemote = false, started = false, connectedOnce = false;
+let restartTimer = null, restartTries = 0, disconnectTimer = null, hasLocalVideo = false;
+
+$("hangup").addEventListener("click", () => post({ type: "hangup" }));
+window.addEventListener("contextmenu", (e) => e.preventDefault());
+
+function setStatus(text) { $("status").textContent = text || ""; }
+function setNotice(text) { const n = $("notice"); n.textContent = text || ""; n.style.display = text ? "block" : "none"; }
+
+function showRemoteVideo(on) {
+  $("remote").style.display = on ? "block" : "none";
+  $("avatarView").style.display = on ? "none" : "flex";
+  $("chip").style.display = on ? "block" : "none";
+}
+
+// ---------------------------------------------------------------- multimedia
+async function getMedia(wantVideo) {
+  let audio = null, video = null;
+  try {
+    audio = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) { log("mikrofon: " + e.name + " " + e.message); }
+  if (wantVideo) {
+    try {
+      video = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+    } catch (e) { log("kamera: " + e.name + " " + e.message); }
+  }
+  const s = new MediaStream();
+  if (audio) audio.getAudioTracks().forEach((t) => s.addTrack(t));
+  if (video) video.getVideoTracks().forEach((t) => s.addTrack(t));
+  return s;
+}
+
+function createPeer(ice) {
+  pc = new RTCPeerConnection({ iceServers: ice || [], iceTransportPolicy: opts.forceRelay ? "relay" : "all", bundlePolicy: "max-bundle" });
+  pc.onicecandidate = (e) => post({ type: "sig", data: { ice: e.candidate ? e.candidate.toJSON() : null } });
+  pc.ontrack = (e) => {
+    if (!remoteStream.getTracks().includes(e.track)) remoteStream.addTrack(e.track);
+    $("remote").srcObject = remoteStream;
+    if (e.track.kind === "video") {
+      const upd = () => showRemoteVideo(!e.track.muted && e.track.readyState === "live");
+      e.track.onunmute = upd; e.track.onmute = upd; e.track.onended = upd; upd();
+    }
+    $("remote").play().catch(() => {});
+  };
+  pc.oniceconnectionstatechange = onConnState;
+  pc.onconnectionstatechange = onConnState;
+
+  const aTrack = localStream.getAudioTracks()[0], vTrack = localStream.getVideoTracks()[0];
+  if (aTrack) pc.addTrack(aTrack, localStream); else pc.addTransceiver("audio", { direction: "recvonly" });
+  if (vTrack) pc.addTrack(vTrack, localStream); else pc.addTransceiver("video", { direction: "recvonly" });
+}
+
+function onConnState() {
+  const s = pc.connectionState, i = pc.iceConnectionState;
+  post({ type: "state", state: s, ice: i });
+  if (s === "connected" || i === "connected" || i === "completed") {
+    clearTimeout(disconnectTimer); clearTimeout(restartTimer); restartTries = 0;
+    setStatus(""); setNotice("");
+    if (!connectedOnce) { connectedOnce = true; reportPath(); }
+  } else if (s === "disconnected" || i === "disconnected") {
+    setStatus("Łączę ponownie…");
+    clearTimeout(disconnectTimer);
+    disconnectTimer = setTimeout(() => restartIce(), 3000);
+  } else if (s === "failed" || i === "failed") {
+    setStatus("Łączę ponownie…");
+    restartIce();
+  }
+}
+
+// Ponowne uzgodnienie ścieżki sieciowej (tylko dzwoniący tworzy oferty). Co 8 s, do skutku; program sam zakończy rozmowę po minucie.
+function restartIce() {
+  if (role !== "caller" || !pc) return;
+  clearTimeout(restartTimer);
+  restartTries++;
+  log("restart ICE #" + restartTries);
+  pc.createOffer({ iceRestart: true }).then((o) => pc.setLocalDescription(o)).then(() => post({ type: "sig", data: { sdp: pc.localDescription.toJSON() } })).catch((e) => log("restart: " + e));
+  restartTimer = setTimeout(() => { if (pc && pc.connectionState !== "connected") restartIce(); }, 8000);
+}
+
+async function reportPath() {
+  try {
+    await new Promise((r) => setTimeout(r, 1200));
+    const stats = await pc.getStats();
+    let pairId = null;
+    stats.forEach((r) => { if (r.type === "transport" && r.selectedCandidatePairId) pairId = r.selectedCandidatePairId; });
+    let pair = null;
+    stats.forEach((r) => { if (r.type === "candidate-pair" && (r.id === pairId || (!pairId && r.selected) || (!pairId && r.nominated && r.state === "succeeded"))) pair = r; });
+    if (!pair) return;
+    const loc = stats.get(pair.localCandidateId), rem = stats.get(pair.remoteCandidateId);
+    post({ type: "path", local: loc && loc.candidateType, remote: rem && rem.candidateType, protocol: loc && loc.protocol });
+  } catch (e) { log("stats: " + e); }
+}
+
+// ---------------------------------------------------------------- negocjacja
+async function makeOffer() {
+  const o = await pc.createOffer();
+  await pc.setLocalDescription(o);
+  post({ type: "sig", data: { sdp: pc.localDescription.toJSON() } });
+}
+
+async function onSig(data) {
+  if (!pc || !data) return;
+  try {
+    if (data.sdp) {
+      await pc.setRemoteDescription(data.sdp);
+      haveRemote = true;
+      for (const c of pendingIce) { try { await pc.addIceCandidate(c); } catch (e) { log("ice: " + e); } }
+      pendingIce = [];
+      if (data.sdp.type === "offer") {
+        const a = await pc.createAnswer();
+        await pc.setLocalDescription(a);
+        post({ type: "sig", data: { sdp: pc.localDescription.toJSON() } });
+      }
+    } else if ("ice" in data) {
+      if (data.ice === null) return;
+      if (haveRemote) await pc.addIceCandidate(data.ice); else pendingIce.push(data.ice);
+    }
+  } catch (e) { log("sig: " + e); }
+}
+
+// ---------------------------------------------------------------- polecenia programu
+async function init(m) {
+  role = m.role; opts = m.opts || {};
+  $("peerName").textContent = m.peerName || "";
+  $("chip").textContent = m.peerName || "";
+  const av = $("avatar");
+  if (m.peerPhoto) { av.style.backgroundImage = "url(" + m.peerPhoto + ")"; av.textContent = ""; }
+  else av.textContent = ((m.peerName || "?").trim()[0] || "?").toUpperCase();
+  showRemoteVideo(false);
+  setStatus(m.status || "");
+
+  localStream = await getMedia(!!m.video);
+  hasLocalVideo = localStream.getVideoTracks().length > 0;
+  const hasAudio = localStream.getAudioTracks().length > 0;
+  if (hasLocalVideo) { $("local").srcObject = localStream; $("local").style.display = "block"; }
+  post({ type: "media", video: hasLocalVideo, audio: hasAudio, wantedVideo: !!m.video });
+  if (!hasAudio) setNotice("Nie wykryto mikrofonu. Druga osoba Cię nie usłyszy, ale Ty ją usłyszysz.");
+  createPeer(m.ice);
+  post({ type: "peer-ready" });
+}
+
+host && host.addEventListener("message", async (e) => {
+  const m = e.data;
+  if (!m || !m.type) return;
+  switch (m.type) {
+    case "init": await init(m); break;
+    case "status": setStatus(m.text); break;
+    case "start": if (pc && !started) { started = true; setStatus("Łączę…"); await makeOffer(); } break;
+    case "answering": setStatus("Łączę…"); break;
+    case "sig": await onSig(m.data); break;
+    case "close":
+      try { clearTimeout(restartTimer); clearTimeout(disconnectTimer); } catch (e2) { /* */ }
+      if (pc) pc.close(); pc = null;
+      if (localStream) localStream.getTracks().forEach((t) => t.stop());
+      break;
+  }
+});
+post({ type: "ready" });
+</script>
+</body>
+</html>

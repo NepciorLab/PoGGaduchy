@@ -1,0 +1,24 @@
+<Window x:Class="PoGGaduchy.CallWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Icon="Assets/app.ico" Title="PoGGaduchy – rozmowa"
+        WindowStyle="None" WindowState="Maximized" ResizeMode="NoResize" Background="#0B1B2B" FontFamily="Segoe UI">
+    <Grid>
+        <wv2:WebView2 x:Name="Web" Visibility="Hidden"/>
+
+        <!-- Gdy nie da się uruchomić strony rozmowy (np. brak składnika WebView2) -->
+        <Grid x:Name="ErrorPanel" Visibility="Collapsed">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="1000">
+                <TextBlock x:Name="ErrorTitle" Text="Nie udało się uruchomić rozmowy" Foreground="#FFC857" FontSize="64" FontWeight="Bold" TextAlignment="Center" TextWrapping="Wrap"/>
+                <TextBlock x:Name="ErrorText" Foreground="White" FontSize="34" TextAlignment="Center" TextWrapping="Wrap" Margin="0,24,0,0"/>
+            </StackPanel>
+            <Button Style="{StaticResource RoundButton}" Width="200" Height="200" Background="#D62828" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                    Margin="0,0,60,50" Click="OnErrorHangup" AutomationProperties.Name="Rozłącz">
+                <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE717;" FontSize="100" Foreground="White" RenderTransformOrigin="0.5,0.5">
+                    <TextBlock.RenderTransform><RotateTransform Angle="135"/></TextBlock.RenderTransform>
+                </TextBlock>
+            </Button>
+        </Grid>
+    </Grid>
+</Window>

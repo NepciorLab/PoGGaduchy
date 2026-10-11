@@ -1,0 +1,51 @@
+<Window x:Class="PoGGaduchy.IncomingCallWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Icon="Assets/app.ico" Title="PoGGaduchy – dzwoni"
+        WindowStyle="None" WindowState="Maximized" ResizeMode="NoResize" Topmost="True" ShowInTaskbar="True"
+        FontFamily="Segoe UI" PreviewKeyDown="OnKey">
+    <Window.Background>
+        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#16385B" Offset="0"/>
+            <GradientStop Color="#2C6A9E" Offset="1"/>
+        </LinearGradientBrush>
+    </Window.Background>
+    <!-- Cała zawartość ma stały rozmiar projektowy i skaluje się do okna -->
+    <Viewbox Stretch="Uniform" Margin="30">
+        <StackPanel Width="1700" Height="1000">
+            <TextBlock x:Name="Caption" Text="Dzwoni do Ciebie" Foreground="#FFD27A" FontSize="64" FontWeight="SemiBold" TextAlignment="Center" Margin="0,0,0,24"/>
+            <Border Width="400" Height="400" CornerRadius="50" Background="#4C7FB0" BorderBrush="White" BorderThickness="9" HorizontalAlignment="Center">
+                <Grid>
+                    <Border CornerRadius="40">
+                        <Border.Background>
+                            <ImageBrush ImageSource="{Binding Image}" Viewbox="{Binding Crop}" Stretch="UniformToFill"/>
+                        </Border.Background>
+                    </Border>
+                    <TextBlock x:Name="Initial" Text="{Binding Initial}" Foreground="White" FontWeight="Bold" FontSize="190"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+                </Grid>
+            </Border>
+            <TextBlock x:Name="NameText" Text="{Binding Name}" Foreground="White" FontWeight="Bold" FontSize="96" TextAlignment="Center"
+                       TextTrimming="CharacterEllipsis" Margin="40,22,40,0"/>
+            <TextBlock x:Name="KindText" Foreground="#E6F0FA" FontSize="44" TextAlignment="Center" Margin="0,6,0,0"/>
+            <TextBlock x:Name="NoCameraText" Text="Ten komputer nie ma kamery – rozmowa będzie bez Twojego obrazu." Foreground="#FFD27A" FontSize="36"
+                       TextAlignment="Center" Margin="0,8,0,0" Visibility="Collapsed"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,36,0,0">
+                <Button x:Name="AnswerButton" Style="{StaticResource BigButton}" Width="720" Height="230" Background="#2EA043" Click="OnAnswer" AutomationProperties.Name="Odbierz">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="AnswerIcon" FontFamily="{StaticResource IconFont}" Text="&#xE717;" FontSize="110" Foreground="White" VerticalAlignment="Center"/>
+                        <TextBlock Text="Odbierz" FontSize="100" FontWeight="Bold" Foreground="White" Margin="30,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="DeclineButton" Style="{StaticResource BigButton}" Width="720" Height="230" Background="#D62828" Margin="60,0,0,0" Click="OnDecline" AutomationProperties.Name="Odrzuć">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE717;" FontSize="110" Foreground="White" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                            <TextBlock.RenderTransform><RotateTransform Angle="135"/></TextBlock.RenderTransform>
+                        </TextBlock>
+                        <TextBlock Text="Odrzuć" FontSize="100" FontWeight="Bold" Foreground="White" Margin="30,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </StackPanel>
+    </Viewbox>
+</Window>

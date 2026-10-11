@@ -16,21 +16,24 @@ $shots = Join-Path $root 'shots'; New-Item -ItemType Directory -Force $shots | O
 $results = [System.Collections.ArrayList]@()
 function Check([bool]$ok, [string]$what) { [void]$results.Add([pscustomobject]@{ Ok = $ok; What = $what }); Write-Host (($(if ($ok) { 'ok:   ' } else { 'FAIL: ' })) + $what) }
 
-function Start-Instance([string]$id, [bool]$noCamera) {
+function Start-Instance([string]$id, [bool]$noCamera, [string]$settingsJson = $null) {
     $dir = Join-Path $root "_probe\$id"
     foreach ($f in 'settings.json', 'log.txt', 'log.txt.old') { Remove-Item (Join-Path $dir $f) -ErrorAction SilentlyContinue }
+    if ($settingsJson) { [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), $settingsJson, (New-Object Text.UTF8Encoding($false))) }
     $env:PGG_DATA = $dir
     $env:PGG_FAKE_MEDIA = '1'
     $env:PGG_NO_CAMERA = $(if ($noCamera) { '1' } else { '' })
     $env:PGG_FORCE_RELAY = $(if ($ForceRelay) { '1' } else { '' })
     $env:PGG_DEVTOOLS = ''
+    $env:PGG_NO_UPDATE = '1'
     $env:PGG_SHOT_DIR = $shots
     $p = Start-Process $Exe -PassThru
     [pscustomobject]@{ Id = $id; Proc = $p; Log = (Join-Path $dir 'log.txt'); Dir = $dir }
 }
 
 $a = Start-Instance $Caller ($Scenario -eq 'nocamera')
-$b = Start-Instance $Callee $false
+$trusted = if ($Scenario -eq 'autoanswer') { '{"Contacts":[{"Id":"' + $Caller + '","ServerName":"' + $CallerName + '","AutoAnswer":true}]}' } else { $null }
+$b = Start-Instance $Callee $false $trusted
 try {
     # --- obie kopie łączą się z serwerem i widzą się nawzajem
     $okA = Find-InProcess $a.Proc.Id $CalleeName 25
@@ -38,11 +41,6 @@ try {
     Check ($null -ne $okA -and $null -ne $okB) 'obie kopie pokazują kafelek drugiej osoby (katalog z serwera)'
     Start-Sleep -Seconds 2
     Save-Screen (Join-Path $shots "e2e-$Scenario-1-list.png")
-
-    if ($Scenario -eq 'autoanswer') {
-        # włączamy automatyczne odbieranie dla dzwoniącego po stronie odbierającego (zapis do pliku ustawień i restart nie jest potrzebny: robimy to w UI)
-        Write-Host 'autoanswer: ustaw ręcznie w ustawieniach – pomijam w tym skrypcie'
-    }
 
     # --- dzwonienie
     $lenA = Get-LogLength $a.Log; $lenB = Get-LogLength $b.Log
@@ -60,10 +58,18 @@ try {
         [void](Invoke-Element $voice)
     }
 
-    $answer = Find-InProcess $b.Proc.Id 'Odbierz' 20
-    Check ($null -ne $answer) 'druga kopia pokazuje pełnoekranowe „Odbierz”'
-    Start-Sleep -Milliseconds 800
-    Save-Screen (Join-Path $shots "e2e-$Scenario-3-incoming.png")
+    $answer = $null
+    if ($Scenario -eq 'autoanswer') {
+        # osoba zaufana (AutoAnswer w ustawieniach odbierającego): okna „Odbierz” nie ma, rozmowa łączy się sama
+        Start-Sleep -Seconds 2
+        Check ($null -eq (Find-InProcess $b.Proc.Id 'Odbierz' 1)) 'osoba zaufana: okno „Odbierz” się nie pokazuje'
+    }
+    else {
+        $answer = Find-InProcess $b.Proc.Id 'Odbierz' 20
+        Check ($null -ne $answer) 'druga kopia pokazuje pełnoekranowe „Odbierz”'
+        Start-Sleep -Milliseconds 800
+        Save-Screen (Join-Path $shots "e2e-$Scenario-3-incoming.png")
+    }
 
     if ($Scenario -eq 'reject') {
         $rej = Find-InProcess $b.Proc.Id 'Odrzuć' 5
@@ -81,7 +87,7 @@ try {
         Check ($null -ne $m) 'odbierający widzi nieodebrane połączenie'
         return
     }
-    [void](Invoke-Element $answer)
+    if ($answer) { [void](Invoke-Element $answer) }
 
     # --- połączenie
     $conA = Wait-LogLine $a.Log 'połączenie connected' 40 $lenA

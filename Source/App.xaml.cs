@@ -104,7 +104,7 @@ public partial class App : Application
 
         if (!devRun)
         {
-            StartUpdateChecks(settings);
+            if (Environment.GetEnvironmentVariable("PGG_NO_UPDATE") != "1") StartUpdateChecks(settings);   // PGG_NO_UPDATE: tylko do testów
             // Składnik WebView2 przygotowujemy z wyprzedzeniem, żeby pierwsza rozmowa nie czekała.
             var warm = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
             warm.Tick += async (_, _) =>

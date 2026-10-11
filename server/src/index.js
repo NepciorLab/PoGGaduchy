@@ -185,7 +185,7 @@ export class Hub extends DurableObject {
     const a = this.att(ws);
     const auto = this.ctx.getWebSocketAutoResponseTimestamp(ws);
     const last = Math.max(a.t0 || 0, a.seen || 0, auto ? auto.getTime() : 0);
-    return Date.now() - last < STALE_MS;
+    return Date.now() - last < (parseInt(this.env.STALE_MS, 10) || STALE_MS);
   }
 
   online() {
@@ -244,7 +244,7 @@ export class Hub extends DurableObject {
 
   async ensureAlarm() {
     if (this.ctx.getWebSockets().length && (await this.ctx.storage.getAlarm()) === null)
-      await this.ctx.storage.setAlarm(Date.now() + SWEEP_MS);
+      await this.ctx.storage.setAlarm(Date.now() + (parseInt(this.env.SWEEP_MS, 10) || SWEEP_MS));
   }
 
   // Sprzątanie: zerwane połączenia, rozmowy bez drugiej strony.

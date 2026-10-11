@@ -1,0 +1,20 @@
+bin/
+obj/
+_probe/
+# dane użytkownika zapisywane obok programu
+settings.json
+settings.json.tmp
+settings.json.bad
+log.txt
+log.txt.old
+kod-instalacji.txt
+/images/
+/webview2/
+# pliki aktualizacji i wyniki budowania
+*.new
+*.old
+PoGGaduchy.exe
+*.zip
+/dist/
+/instalacje/
+/shots/

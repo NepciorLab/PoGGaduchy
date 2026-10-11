@@ -1,0 +1,19 @@
+{
+  "name": "poggaduchy",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": true,
+  "vars": {
+    // Ważność poświadczeń TURN w sekundach (6 godzin: dłużej niż najdłuższa rozmowa).
+    "TURN_TTL": "21600"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "Hub" }]
+  },
+  // Darmowy plan wymaga Durable Objects z bazą SQLite.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  // Ograniczenie prób z błędnym kluczem (z jednego adresu IP). Ustawienie jest opcjonalne: bez niego serwer też działa.
+  "ratelimits": [
+    { "name": "AUTH_FAIL_LIMITER", "namespace_id": "4101", "simple": { "limit": 10, "period": 60 } }
+  ]
+}

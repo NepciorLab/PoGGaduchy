@@ -165,6 +165,7 @@ public sealed class SignalingClient : Observable
     {
         using var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Authorization", "Bearer " + id.Key);
+        if (AdminFile.Load() is { } adminKey) ws.Options.SetRequestHeader("X-Admin-Key", adminKey);   // serwer wie wtedy, że to administrator
         ws.Options.KeepAliveInterval = TimeSpan.Zero;           // własny ping tekstowy (patrz niżej)
         _ws = ws;
         using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(stop);

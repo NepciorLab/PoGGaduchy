@@ -14,6 +14,8 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
   // Ograniczenie prób z błędnym kluczem (z jednego adresu IP). Ustawienie jest opcjonalne: bez niego serwer też działa.
   "ratelimits": [
-    { "name": "AUTH_FAIL_LIMITER", "namespace_id": "4101", "simple": { "limit": 10, "period": 60 } }
+    { "name": "AUTH_FAIL_LIMITER", "namespace_id": "4101", "simple": { "limit": 10, "period": 60 } },
+    // Samodzielne zakładanie kont (POST /api/register): najwyżej 10 prób na minutę z jednego adresu IP
+    { "name": "REGISTER_LIMITER", "namespace_id": "4102", "simple": { "limit": 10, "period": 60 } }
   ]
 }

@@ -138,7 +138,7 @@ try {
     Check ($null -ne $ok) 'po dodaniu osoby pojawia się komunikat z informacją o pliku do przekazania'
     if ($ok) { [void](Invoke-Element $ok) }
     Start-Sleep -Milliseconds 800
-    Check ((Test-Path (Join-Path $a.Dir 'Nowe osoby\ciocia-lucja\kod-instalacji.txt')) -and (Test-Path (Join-Path $a.Dir 'Nowe osoby\ciocia-lucja.zip'))) 'powstał folder i zip z kodem instalacji nowej osoby'
+    Check ((Test-Path (Join-Path $a.Dir 'Nowe osoby\ciocia-lucja\kod-instalacji.txt')) -and -not (Test-Path (Join-Path $a.Dir 'Nowe osoby\ciocia-lucja.zip')) -and -not (Test-Path (Join-Path $a.Dir 'Nowe osoby\ciocia-lucja\PoGGaduchy.exe'))) 'powstał tylko plik kod-instalacji.txt nowej osoby (bez zipa i bez kopii programu)'
     Check ($null -ne (Find-InProcess $b.Proc.Id 'Ciocia Łucja' 10)) 'bartek od razu widzi nową osobę na liście kafelków'
 
     # usunięcie osoby
@@ -154,6 +154,53 @@ try {
     [void](Invoke-Element (Find-InSettings $a.Proc.Id 'Audio i wideo' 3)); Start-Sleep -Seconds 6
     Save-Screen (Join-Path $shots 'settings-ala-av.png')
     Check ($null -ne (Find-InSettings $a.Proc.Id 'Mikrofon' 3)) 'grupa „Audio i wideo” pokazuje wybór mikrofonu'
+
+    # ---- nowa osoba sama zakłada konto (program bez kod-instalacji.txt)
+    $nd = Join-Path $root '_probe\nowy'
+    Remove-Item $nd -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory $nd | Out-Null
+    $env:PGG_DATA = $nd; $env:PGG_SERVER = 'http://127.0.0.1:8787'; $env:PGG_TEST_PHOTO = ''
+    $known = @(Get-Process PoGGaduchy | ForEach-Object { $_.Id })
+    $n = Start-Process $Exe -PassThru
+    $create = Find-InProcess $n.Id 'Utwórz konto' 25
+    Check ($null -ne $create) 'program bez pliku kod-instalacji.txt pokazuje okno zakładania konta (zamiast komunikatu o braku pliku)'
+    Save-Screen (Join-Path $shots 'register-1-window.png')
+    if ($create) {
+        $win = Get-TopWindows $n.Id | Select-Object -First 1
+        $box = Find-ById $win 'NameBox' 5
+        $box.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue('Nowa Osoba')
+        [void](Invoke-Element $create)
+    }
+    $kodNew = Join-Path $nd 'kod-instalacji.txt'
+    $end = (Get-Date).AddSeconds(30); while (-not (Test-Path $kodNew) -and (Get-Date) -lt $end) { Start-Sleep -Milliseconds 400 }
+    Check (Test-Path $kodNew) 'po założeniu konta powstaje plik kod-instalacji.txt tej osoby'
+    Start-Sleep -Seconds 6
+    $nn = Get-Process PoGGaduchy | Where-Object { $known -notcontains $_.Id -and $_.Id -ne $n.Id } | Select-Object -First 1
+    Check ($null -ne $nn) 'program uruchamia się ponownie już jako nowa osoba'
+    Remove-Item Env:\PGG_SERVER -ErrorAction SilentlyContinue
+    if ($nn) {
+        Check ($null -ne (Text-Contains $nn.Id 'czeka na akceptację administratora' 20)) 'nowa osoba widzi komunikat, że konto czeka na akceptację'
+        Check ($null -ne (Find-InProcess $nn.Id 'Ala' 10)) 'nowa osoba widzi kafelek administratora (Ala)'
+        Check ($null -eq (Find-InProcess $nn.Id 'Bartek' 2)) 'nowa osoba (NEW) NIE widzi zwykłych osób'
+        Save-Screen (Join-Path $shots 'register-2-pending.png')
+    }
+    Check ($null -ne (Text-Contains $a.Proc.Id 'Nowe konto czeka na akceptację: Nowa Osoba' 15)) 'administrator dostaje komunikat o nowym koncie'
+    $navNew = Find-InSettings $a.Proc.Id 'Osoby · NEW: 1' 8
+    Check ($null -ne $navNew) 'nawigacja administratora pokazuje licznik: NEW: 1'
+    if ($navNew) {
+        [void](Invoke-Element $navNew); Start-Sleep -Milliseconds 1200; Save-Screen (Join-Path $shots 'register-3a.png')
+        [void](Invoke-Element (Find-InSettings $a.Proc.Id 'Nowa Osoba' 5)); Start-Sleep -Milliseconds 700
+        Save-Screen (Join-Path $shots 'register-3-admin-new.png')
+        $acc = Find-InSettings $a.Proc.Id 'Zaakceptuj konto' 5
+        Check ($null -ne $acc) 'przy koncie NEW jest przycisk „Zaakceptuj konto”'
+        if ($acc) { [void](Invoke-Element $acc) }
+        Check ($null -ne (Text-Contains $a.Proc.Id 'zaakceptowane. Od teraz widzi je cała rodzina' 10)) 'administrator akceptuje konto'
+    }
+    if ($nn) {
+        Check ($null -ne (Find-InProcess $nn.Id 'Bartek' 15)) 'po akceptacji nowa osoba widzi wszystkich (Bartek)'
+        Check ($null -eq (Text-Contains $nn.Id 'czeka na akceptację administratora' 3)) 'komunikat o oczekiwaniu znika po akceptacji'
+        try { Stop-Process -Id $nn.Id -Force } catch { }
+    }
+    try { Stop-Process -Id $n.Id -Force } catch { }
 }
 finally {
     foreach ($i in $a, $b) { try { Stop-Process -Id $i.Proc.Id -Force } catch { } }

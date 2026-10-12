@@ -33,6 +33,12 @@ rozmowy w prawym dolnym rogu świeci duża czerwona słuchawka. Rozmowy toczą s
 * **Własny obraz widoczny u wszystkich**: każdy ustawia swoje zdjęcie (Ustawienia → „Mój obraz”: przesuwanie, powiększanie,
   pomniejszanie, obrót). Zdjęcie trafia na serwer i pojawia się na kafelkach u pozostałych osób (zapisane też na dysku, więc
   widać je bez internetu). Każdy zmienia tylko swój obraz.
+* **Samodzielne zakładanie konta**: nowa osoba uruchamia program bez żadnego pliku i zamiast komunikatu o błędzie dostaje
+  propozycję założenia konta (wybiera imię i może dodać zdjęcie). Program sam tworzy konto na serwerze i zapisuje dla niej plik
+  `kod-instalacji.txt`, po czym uruchamia się ponownie już jako ta osoba. Do czasu akceptacji konto jest oznaczone jako
+  **NEW**: nowa osoba widzi tylko administratora i może rozmawiać tylko z nim, a reszta rodziny jej nie widzi i nie dostaje od niej
+  połączeń. Administrator dostaje komunikat, a w Ustawieniach → „Osoby” widzi takie konto w innym kolorze z napisem **NEW** i może
+  je **zaakceptować** albo **usunąć**. Nieakceptowane konta znikają po 14 dniach, a oczekujących może być jednocześnie najwyżej 5.
 * **Administrator**: osoba z plikiem `Admin.PMa` obok programu (patrz niżej) widzi w ustawieniach grupę „Osoby (administrator)”:
   dodaje i usuwa osoby, zmienia ich nazwy, ustawia obraz każdej osoby i wydaje nowe kody instalacji. Zwykłe osoby tej grupy nie widzą.
 * **Audio i wideo** (Ustawienia): wybór mikrofonu, głośników i kamery, podgląd kamery, wskaźnik poziomu mikrofonu i próba
@@ -76,6 +82,7 @@ Grupy w Ustawieniach: **Mój obraz**, **Audio i wideo**, **Połączenia**, **Wyg
 * **Dostęp**: każda kopia programu ma długi, losowy, tajny klucz (256 bitów). Serwer zna tylko **skróty SHA-256** dozwolonych
   kluczy. Obca osoba bez klucza nie może ani się zalogować, ani zadzwonić do rodziny; błędne próby z jednego adresu IP są
   ograniczane (po 10 w minucie – odpowiedź 429), a ramki z jednego połączenia mają limit szybkości i rozmiaru.
+* **Konta NEW**: serwer przyjmuje `POST /api/register` bez klucza (limit: 10 prób na minutę z jednego adresu IP, najwyżej 5 oczekujących kont), ale takie konto jest niewidoczne dla rodziny i może dzwonić tylko do administratora.
 * **Administrator**: tekst z pliku `Admin.PMa` jest wysyłany do serwera razem z kluczem osoby; serwer zna tylko jego skrót
   (sekret `ADMIN_HASH`). Samo istnienie pliku nic nie daje – o uprawnieniach decyduje serwer. **Kto skopiuje plik `Admin.PMa`,
   staje się administratorem**, więc trzymaj go tylko u siebie i nie wysyłaj razem z programem do rodziny.
@@ -137,26 +144,24 @@ zastępuje zawartość pliku; bez `-Generuj` skrypt używa istniejącego tekstu 
 
 ### 3. Program na komputerze osoby
 
-**Najprościej – ręczne kopiowanie**: program to jeden plik, a tożsamość osoby to plik `kod-instalacji.txt` obok niego. Skopiuj
-na komputer osoby dwa pliki do jednego folderu (np. pendrive'em, `PoGGaduchy.exe` z [wydania](../../releases) lub z własnego
-`build.cmd`, oraz `instalacje\<id>\kod-instalacji.txt` tej osoby) i uruchom `PoGGaduchy.exe`. Ten sam plik `.exe` można dać
-wszystkim, różni się tylko `kod-instalacji.txt`.
+Program to jeden plik `PoGGaduchy.exe` (nie wymaga instalowania .NET; pobierasz go z [wydania](../../releases)). Są dwie drogi:
 
-**Nowa osoba dodana w programie** (Ustawienia → Osoby → „+ Dodaj osobę…”): program sam tworzy klucz, zapisuje jego skrót na
-serwerze i składa gotowy zip (program + kod instalacji) w folderze `Nowe osoby` obok programu – wystarczy go przekazać.
+**A. Osoba zakłada konto sama (najprościej).** Dajesz jej tylko `PoGGaduchy.exe`. Po uruchomieniu wybiera imię (i zdjęcie), a
+program sam tworzy konto i plik `kod-instalacji.txt`. Zostaje jeszcze **akceptacja** przez administratora (Ustawienia → Osoby →
+konto z napisem NEW → „Zaakceptuj konto”). Adres serwera nowy program bierze z pliku [`server.json`](server.json) w tym
+repozytorium (na GitHubie), więc zmiana serwera nie wymaga nowego wydania.
 
-Albo użyj skryptu, który składa gotowy folder i zip (z lokalnym plikiem albo z najnowszego wydania na GitHubie):
+**B. Administrator tworzy konto z góry.** Ustawienia → Osoby → „+ Dodaj osobę…”: program zapisuje na serwerze skrót klucza i
+tworzy plik `kod-instalacji.txt` w folderze `Nowe osoby\<id>` obok programu (bez kopii programu i bez zipa). Ten plik osoba
+kładzie obok `PoGGaduchy.exe`. Plik zawiera tajny klucz – przekaż go tylko tej osobie. Dla osób dodanych skryptem:
 
 ```powershell
-.\tools\przygotuj-kopie.ps1 -Id mama -Exe .\PoGGaduchy.exe   # z własnego pliku (bez GitHuba)
-.\tools\przygotuj-kopie.ps1 -Id mama                         # z najnowszego wydania na GitHubie (wymaga gh)
+.\tools\przygotuj-kopie.ps1 -Id mama                       # dist\kopie\mama\kod-instalacji.txt
+.\tools\przygotuj-kopie.ps1 -Id mama -Katalog D:\Mama      # kod trafia do wskazanego katalogu osoby
 ```
 
-Wynik: `dist\kopie\mama\` i `dist\kopie\PoGGaduchy-mama.zip`.
-
-Na komputerze osoby: rozpakuj zip w dowolnym folderze i uruchom `PoGGaduchy.exe` (nie wymaga instalowania .NET). Program
-sam wpisze się do autostartu Windows. Osoby z serwera pojawiają się na kafelkach automatycznie, a swoje zdjęcie każdy ustawia
-raz w Ustawieniach (przytrzymaj przycisk 1 sekundę → „Mój obraz”).
+Program sam wpisze się do autostartu Windows. Osoby z serwera pojawiają się na kafelkach automatycznie, a swoje zdjęcie każdy
+ustawia raz w Ustawieniach (przytrzymaj przycisk 1 sekundę → „Mój obraz”).
 
 Wymagania: Windows 10/11 (64-bit) ze składnikiem **Microsoft Edge WebView2** (jest w Windows 11 i w aktualnym Windows 10).
 
@@ -228,7 +233,7 @@ Testy (opisy w nagłówkach skryptów):
   i 3440×1440 przy skalowaniu Windows 100–150%).
 
 Zmienne środowiskowe tylko do testów: `PGG_DATA` (inny folder danych), `PGG_FAKE_MEDIA=1` (sztuczna kamera i mikrofon),
-`PGG_NO_CAMERA=1`, `PGG_FORCE_RELAY=1`, `PGG_NO_UPDATE=1`, `PGG_TEST_PHOTO` (plik zdjęcia zamiast okna wyboru),
+`PGG_NO_CAMERA=1`, `PGG_FORCE_RELAY=1`, `PGG_NO_UPDATE=1`, `PGG_TEST_PHOTO` (plik zdjęcia zamiast okna wyboru), `PGG_SERVER` (adres serwera wprost, bez pobierania `server.json`),
 `PGG_REPO` (inne repozytorium aktualizacji).
 
 ## Znane ograniczenia

@@ -32,7 +32,7 @@ public static class AdminFile
 }
 
 /// <summary>Wyniki wywołań serwera, które mogą się nie udać z różnych powodów.</summary>
-public enum ApiResult { Ok, NotFound, Forbidden, Conflict, TooLarge, BadRequest, Unauthorized, NetworkError }
+public enum ApiResult { Ok, NotFound, Forbidden, Conflict, TooLarge, BadRequest, Unauthorized, NetworkError, Busy }
 
 /// <summary>Wywołania HTTP serwera: obrazy osób i panel administratora (klucz osoby w nagłówku, nigdy w adresie).</summary>
 public sealed class ServerApi : Observable
@@ -70,7 +70,7 @@ public sealed class ServerApi : Observable
         HttpStatusCode.Unauthorized => ApiResult.Unauthorized,
         HttpStatusCode.Conflict => ApiResult.Conflict,
         HttpStatusCode.RequestEntityTooLarge => ApiResult.TooLarge,
-        HttpStatusCode.TooManyRequests => ApiResult.Forbidden,
+        HttpStatusCode.TooManyRequests => ApiResult.Busy,
         _ => ApiResult.BadRequest,
     };
 
@@ -151,8 +151,27 @@ public sealed class ServerApi : Observable
         return SendAsync(r);
     }
 
+    /// <summary>Administrator akceptuje konto założone samodzielnie (zdejmuje oznaczenie NEW).</summary>
+    public Task<ApiResult> AcceptPersonAsync(string id) =>
+        SendAsync(Req(HttpMethod.Post, "/api/admin/people/" + Uri.EscapeDataString(id) + "/accept", true));
+
     public Task<ApiResult> RemovePersonAsync(string id) =>
         SendAsync(Req(HttpMethod.Delete, "/api/admin/people/" + Uri.EscapeDataString(id), true));
+
+    /// <summary>Samodzielne założenie konta (bez klucza): serwer tworzy konto NEW i zwraca jego id.</summary>
+    public static async Task<(ApiResult Result, string? Id)> RegisterAsync(string server, string name, string hash)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("PoGGaduchy/" + AppInfo.VersionText);
+            using var resp = await http.PostAsync(server.TrimEnd('/') + "/api/register", JsonBody(new { name, hash }));
+            if (!resp.IsSuccessStatusCode) { Log.Write("Rejestracja: serwer odpowiedział " + (int)resp.StatusCode); return (Map(resp.StatusCode), null); }
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            return (ApiResult.Ok, doc.RootElement.GetProperty("id").GetString());
+        }
+        catch (Exception ex) { Log.Write("Rejestracja: " + ex.Message); return (ApiResult.NetworkError, null); }
+    }
 
     // ---------- klucze ----------
 
@@ -161,5 +180,36 @@ public sealed class ServerApi : Observable
     {
         var key = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         return (key, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant());
+    }
+}
+
+/// <summary>
+/// Skąd nowy program (bez kodu instalacji) wie, z jakim serwerem się łączyć: mały plik server.json w repozytorium na GitHubie
+/// (zmiana serwera nie wymaga nowego wydania). Do testów: zmienna PGG_SERVER wskazuje serwer wprost.
+/// </summary>
+public static class ServerLocator
+{
+    public static string PointerUrl => $"https://raw.githubusercontent.com/{AppInfo.Repository}/main/server.json";
+
+    public static async Task<string?> ResolveAsync()
+    {
+        var env = Environment.GetEnvironmentVariable("PGG_SERVER");
+        if (!string.IsNullOrWhiteSpace(env)) return Valid(env);
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("PoGGaduchy/" + AppInfo.VersionText);
+            using var doc = JsonDocument.Parse(await http.GetStringAsync(PointerUrl));
+            return Valid(doc.RootElement.GetProperty("server").GetString() ?? "");
+        }
+        catch (Exception ex) { Log.Write("Adres serwera z GitHuba: " + ex.Message); return null; }
+    }
+
+    // Zwykły internet tylko przez HTTPS; HTTP dopuszczamy wyłącznie dla serwera testowego na tym komputerze.
+    static string? Valid(string s)
+    {
+        if (!Uri.TryCreate(s.Trim(), UriKind.Absolute, out var u)) return null;
+        if (u.Scheme != Uri.UriSchemeHttps && !(u.Scheme == Uri.UriSchemeHttp && u.IsLoopback)) return null;
+        return s.Trim().TrimEnd('/');
     }
 }

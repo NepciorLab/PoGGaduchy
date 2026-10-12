@@ -1,12 +1,13 @@
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 
 namespace PoGGaduchy;
 
@@ -32,7 +33,12 @@ public partial class SettingsWindow : Window
             ["people"] = PanelPeople, ["program"] = PanelProgram,
         };
         Preview.Content = _settings.Contacts.FirstOrDefault() ?? Sample;
-        AutoAnswerList.ItemsSource = _settings.Contacts;
+        // lista "odbieraj automatycznie" bez kont NEW (te widzi tylko administrator, w grupie Osoby)
+        var auto = (ListCollectionView)new CollectionViewSource { Source = _settings.Contacts }.View;
+        auto.Filter = o => o is Person { IsNew: false };
+        auto.IsLiveFiltering = true;
+        auto.LiveFilteringProperties.Add(nameof(Person.IsNew));
+        AutoAnswerList.ItemsSource = auto;
         NoPeopleText.Visibility = _settings.Contacts.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         PeopleList.ItemsSource = _settings.Contacts;
 
@@ -48,6 +54,20 @@ public partial class SettingsWindow : Window
         Closed += (_, _) => { _settings.PropertyChanged -= OnSettingChanged; StopPreview(); SettingsStore.Save(_settings); };
         if (Api != null) { Api.PropertyChanged += OnApiChanged; Closed += (_, _) => Api.PropertyChanged -= OnApiChanged; }
         UpdateAdminUi();
+        UpdateNavPeople();
+        foreach (var p in _settings.Contacts) p.PropertyChanged += OnAnyPersonChanged;
+        NotifyCollectionChangedEventHandler hook = (_, e) =>
+        {
+            if (e.NewItems != null) foreach (Person p in e.NewItems) p.PropertyChanged += OnAnyPersonChanged;
+            if (e.OldItems != null) foreach (Person p in e.OldItems) p.PropertyChanged -= OnAnyPersonChanged;
+            UpdateNavPeople();
+        };
+        _settings.Contacts.CollectionChanged += hook;
+        Closed += (_, _) =>
+        {
+            _settings.Contacts.CollectionChanged -= hook;
+            foreach (var p in _settings.Contacts) p.PropertyChanged -= OnAnyPersonChanged;
+        };
         Nav.SelectedIndex = 0;
     }
 
@@ -74,6 +94,28 @@ public partial class SettingsWindow : Window
 
     void OnApiChanged(object? sender, PropertyChangedEventArgs e) => Dispatcher.BeginInvoke(UpdateAdminUi);
 
+    void OnAnyPersonChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(Person.IsNew)) return;
+        Dispatcher.BeginInvoke(() => { UpdateNavPeople(); UpdateNewUi(); });
+    }
+
+    /// <summary>Etykieta grupy administratora z liczbą kont czekających na akceptację.</summary>
+    void UpdateNavPeople()
+    {
+        var n = _settings.Contacts.Count(p => p.IsNew);
+        var label = n > 0 ? $"Osoby · NEW: {n}" : "Osoby (administrator)";
+        NavPeople.Content = label;
+        System.Windows.Automation.AutomationProperties.SetName(NavPeople, label);
+    }
+
+    void UpdateNewUi()
+    {
+        var isNew = CurrentPerson is { IsNew: true };
+        AcceptButton.Visibility = isNew ? Visibility.Visible : Visibility.Collapsed;
+        NewInfo.Visibility = isNew ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     void UpdateAdminUi()
     {
         var admin = Api is { IsAdmin: true };
@@ -98,6 +140,7 @@ public partial class SettingsWindow : Window
         ApiResult.Unauthorized => "Serwer nie rozpoznaje kodu instalacji tego programu.",
         ApiResult.TooLarge => "Obraz jest za duży.",
         ApiResult.Conflict => "Taka osoba już istnieje albo nie można tego zrobić.",
+        ApiResult.Busy => "Serwer chwilowo odmawia (zbyt wiele prób). Spróbuj za chwilę.",
         ApiResult.NotFound => "Nie znaleziono (osoba mogła zostać usunięta).",
         _ => "Nie udało się. Spróbuj jeszcze raz.",
     };
@@ -239,6 +282,7 @@ public partial class SettingsWindow : Window
         PersonNameBox.Text = p?.Name ?? "";
         PersonPhoto.LoadExisting(p == null ? null : SettingsStore.LoadFile(SettingsStore.AvatarPath(p.Id)) is { } img && p.AvatarVer > 0 ? img : null, p?.Name ?? "");
         PeopleStatus.Text = "";
+        UpdateNewUi();
     }
 
     async void OnSavePersonName(object sender, RoutedEventArgs e)
@@ -295,26 +339,22 @@ public partial class SettingsWindow : Window
         PeopleStatus.Text = "Dodaję osobę…";
         var r = await Api.AddPersonAsync(id, name, hash);
         if (r != ApiResult.Ok) { PeopleStatus.Text = Describe(r); return; }
-        var zip = CreateInstallFolder(id, key);
-        PeopleStatus.Text = $"Dodano osobę „{name}”. Folder z programem i jej kodem instalacji jest gotowy.";
-        ShowFile(zip);
+        var file = CreateInstallFolder(id, key);
+        PeopleStatus.Text = $"Dodano osobę „{name}”. Plik z jej kodem instalacji jest gotowy.";
+        ShowFile(file);
         MessageBox.Show(this,
-            $"Osoba „{name}” została dodana.\n\nGotowy plik do przekazania jej: {zip}\n\nZawiera program i jej tajny kod instalacji. Rozpakuj go na jej komputerze i uruchom PoGGaduchy.exe. " +
+            $"Osoba „{name}” została dodana.\n\nPlik do przekazania jej: {file}\n\nTo jej tajny kod instalacji. Ma go położyć obok PoGGaduchy.exe na swoim komputerze. " +
             "Przekaż go tylko jej – kod daje dostęp do rozmów.", "Nowa osoba", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
-    /// <summary>Składa folder "Nowe osoby\id" z programem i kodem instalacji oraz zip do przekazania. Zwraca ścieżkę zipa.</summary>
+    /// <summary>Zapisuje kod-instalacji.txt nowej osoby w folderze "Nowe osoby\id" (bez kopii programu i bez zipa). Zwraca ścieżkę pliku.</summary>
     string CreateInstallFolder(string id, string key)
     {
         var dir = Path.Combine(SettingsStore.DataDir, "Nowe osoby", id);
-        if (Directory.Exists(dir)) Directory.Delete(dir, true);
         Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, "kod-instalacji.txt"), Identity.CreateCode(Services.Identity!.Server, key, id));
-        if (File.Exists(AppInfo.ExePath)) File.Copy(AppInfo.ExePath, Path.Combine(dir, "PoGGaduchy.exe"), true);
-        var zip = dir + ".zip";
-        if (File.Exists(zip)) File.Delete(zip);
-        ZipFile.CreateFromDirectory(dir, zip);
-        return zip;
+        var file = Path.Combine(dir, "kod-instalacji.txt");
+        File.WriteAllText(file, Identity.CreateCode(Services.Identity!.Server, key, id));
+        return file;
     }
 
     static void ShowFile(string path)
@@ -331,9 +371,17 @@ public partial class SettingsWindow : Window
         var (key, hash) = ServerApi.NewKey();
         var r = await Api.SetKeyHashAsync(p.Id, hash);
         if (r != ApiResult.Ok) { PeopleStatus.Text = Describe(r); return; }
-        var zip = CreateInstallFolder(p.Id, key);
-        PeopleStatus.Text = $"Nowy kod dla „{p.Name}” gotowy: {zip}";
-        ShowFile(zip);
+        var file = CreateInstallFolder(p.Id, key);
+        PeopleStatus.Text = $"Nowy kod dla „{p.Name}” gotowy: {file}";
+        ShowFile(file);
+    }
+
+    async void OnAcceptPerson(object sender, RoutedEventArgs e)
+    {
+        var p = CurrentPerson;
+        if (p == null || Api == null) return;
+        var r = await Api.AcceptPersonAsync(p.Id);
+        PeopleStatus.Text = r == ApiResult.Ok ? $"Konto „{p.Name}” zaakceptowane. Od teraz widzi je cała rodzina." : Describe(r);
     }
 
     async void OnRemovePerson(object sender, RoutedEventArgs e)

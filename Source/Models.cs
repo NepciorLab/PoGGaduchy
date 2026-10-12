@@ -81,6 +81,11 @@ public sealed class Person : Observable
     /// <summary>Numer wersji obrazu na serwerze (nie zapisywany; używany do pobierania).</summary>
     [JsonIgnore] public int RemoteAv { get; set; }
 
+    bool _isNew;
+
+    /// <summary>Konto założone samodzielnie, jeszcze niezaakceptowane przez administratora (widoczne tylko dla administratora).</summary>
+    [JsonIgnore] public bool IsNew { get => _isNew; set => Set(ref _isNew, value); }
+
     [JsonIgnore] public string Initial => string.IsNullOrWhiteSpace(Name) ? "?" : Name.Trim()[..1].ToUpperInvariant();
 
     /// <summary>Wymusza ponowne wczytanie obrazu z dysku (po pobraniu nowego pliku).</summary>
@@ -269,6 +274,11 @@ public sealed class AppSettings : Observable
     /// <summary>Moje id i nazwa (z ostatniego połączenia z serwerem).</summary>
     public string MyId { get; set; } = "";
     public string MyName { get; set; } = "";
+
+    bool _myIsNew;
+
+    /// <summary>Moje konto czeka na akceptację administratora (do tego czasu rozmawiam tylko z administratorem).</summary>
+    [JsonIgnore] public bool MyIsNew { get => _myIsNew; set => Set(ref _myIsNew, value); }
 
     /// <summary>Wersja mojego obrazu na serwerze (0 = brak) i ta zapisana na dysku (do podglądu w ustawieniach).</summary>
     [JsonIgnore] public int MyAv { get; set; }

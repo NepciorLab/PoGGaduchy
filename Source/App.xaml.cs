@@ -89,6 +89,16 @@ public partial class App : Application
         Services.Identity = identity;
         if (!devRun && Environment.GetEnvironmentVariable("PGG_DATA") == null) Autostart.Apply(settings.Autostart);
 
+        // Brak (albo uszkodzony) kod-instalacji.txt: zamiast komunikatu o błędzie nowa osoba może sama założyć konto.
+        if (!devRun && identity == null)
+        {
+            Log.Write("Brak kodu instalacji – pokazuję okno zakładania konta.");
+            var reg = new RegistrationWindow();
+            MainWindow = reg;
+            reg.Show();
+            return;
+        }
+
         if (!devRun && identity != null)
         {
             _sig = new SignalingClient(Dispatcher);
@@ -198,6 +208,7 @@ public partial class App : Application
                 if (grp != null) sw.ShowGroup(grp);
                 target = sw; target.Show();
             }
+            if (args.Contains("--rejestracja")) { var rw = new RegistrationWindow(); rw.Show(); target = rw; }
             if (args.Contains("--incoming"))
             {
                 var inc = new IncomingCallWindow(settings.Contacts[1], true, !args.Contains("--nocamera")) { Topmost = false };

@@ -72,6 +72,9 @@ public sealed class CallManager : Observable
     /// <summary>Krótki komunikat dla użytkownika (np. "Kasia nie odbiera"), wyświetlany w głównym oknie.</summary>
     public event Action<string>? Notice;
 
+    /// <summary>Komunikat spoza rozmowy (np. nowe konto czeka na akceptację) w głównym oknie.</summary>
+    public void RaiseNotice(string text) => Notice?.Invoke(text);
+
     string PeerName => _peer?.Name is { Length: > 0 } n ? n : "tej osoby";
 
     /// <summary>Okno rozmowy lub komunikatu o rozmowie – do wysunięcia na wierzch, gdy ktoś uruchomi program drugi raz.</summary>
@@ -177,7 +180,7 @@ public sealed class CallManager : Observable
             _sig.Send(new { t = "end", cid, reason = "rejected" });     // serwer nie powinien tego dopuścić, ale na wszelki wypadek
             return;
         }
-        var person = _settings.Contacts.FirstOrDefault(p => p.Id == from) ?? new Person { Id = from, ServerName = from };
+        var person = _settings.Contacts.FirstOrDefault(p => p.Id == from) ?? new Person { Id = from, ServerName = m.TryGetProperty("name", out var fn) && fn.GetString() is { Length: > 0 } nm ? nm : from };
         Begin("callee", person, video, cid);
         State = CallState.Incoming;
         Log.Write($"Dzwoni {from} (wideo: {video}), rozmowa {cid}");

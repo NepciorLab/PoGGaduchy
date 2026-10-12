@@ -57,7 +57,12 @@ public partial class MainWindow : Window
             Left = 0; Top = 0;
         }
         DataContext = settings;
-        _view = CollectionViewSource.GetDefaultView(settings.Contacts);
+        // własny widok (nie domyślny), żeby filtr "bez kont NEW" nie wpływał na inne okna
+        var lcv = (ListCollectionView)new CollectionViewSource { Source = settings.Contacts }.View;
+        lcv.Filter = o => o is Person { IsNew: false };
+        lcv.IsLiveFiltering = true;
+        lcv.LiveFilteringProperties.Add(nameof(Person.IsNew));
+        _view = lcv;
         ContactList.ItemsSource = _view;
         foreach (var p in settings.Contacts) p.PropertyChanged += OnPersonChanged;
         settings.Contacts.CollectionChanged += (_, e) =>
@@ -69,7 +74,7 @@ public partial class MainWindow : Window
         _settings.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(AppSettings.TileWidth) or nameof(AppSettings.NameFontSize)) UpdateScales();
-            if (e.PropertyName is nameof(AppSettings.SilentUpdate)) RefreshBanner();
+            if (e.PropertyName is nameof(AppSettings.SilentUpdate) or nameof(AppSettings.MyIsNew)) RefreshBanner();
         };
         _noticeTimer.Tick += (_, _) => { _noticeTimer.Stop(); _notice = ""; RefreshBanner(); };
         _holdHintTimer.Tick += (_, _) => { _holdHintTimer.Stop(); HoldHint.Visibility = Visibility.Collapsed; };
@@ -188,7 +193,7 @@ public partial class MainWindow : Window
     {
         _notice = text;
         _noticeTimer.Stop();
-        _noticeTimer.Interval = text.StartsWith("Nieodebrane") ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(20);
+        _noticeTimer.Interval = text.StartsWith("Nieodebrane") || text.StartsWith("Nowe konto") ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(20);
         _noticeTimer.Start();
         RefreshBanner();
     }
@@ -199,6 +204,7 @@ public partial class MainWindow : Window
         if (_identity == null) text = "Brak kodu instalacji. Poproś osobę, która przygotowała program, o plik „kod-instalacji.txt”.";
         else if (_sig is { IsConnected: false }) text = _sig.StatusText;
         else if (!string.IsNullOrEmpty(_notice)) text = _notice;
+        else if (_settings.MyIsNew) text = "Twoje konto czeka na akceptację administratora. Na razie możesz rozmawiać tylko z administratorem.";
         var update = UpdateManager.Instance.ReadyToInstall && !_settings.SilentUpdate && _calls is not { InCall: true };
         UpdateButton.Visibility = update ? Visibility.Visible : Visibility.Collapsed;
         if (text == null && update) text = $"Jest nowa wersja programu{(UpdateManager.Instance.PendingVersion is { Length: > 0 } v ? " (" + v + ")" : "")}.";

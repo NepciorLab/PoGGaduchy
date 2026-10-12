@@ -19,7 +19,9 @@
 //   POST /api/admin/people          -> {id,name,hash} dodaje osobę             (klucz + admin)
 //   PATCH /api/admin/people/<id>    -> {name?, hash?} zmiana nazwy / klucza    (klucz + admin)
 //   DELETE /api/admin/people/<id>   -> usuwa osobę (i jej obraz)               (klucz + admin)
-//   GET  /ws                        -> WebSocket                               (klucz)
+//   POST /api/register              -> {name, hash}: samodzielne założenie konta (konto czeka na akceptację, status NEW)  (bez klucza)
+//   POST /api/admin/people/<id>/accept -> akceptacja konta NEW                 (klucz + admin)
+//   GET  /ws                        -> WebSocket                               (klucz; z X-Admin-Key serwer wie, że to administrator)
 //
 // WebSocket, ramki tekstowe:
 //   "ping" -> "pong"   odpowiada platforma (auto-response), bez budzenia obiektu i bez zużywania limitu
@@ -51,6 +53,8 @@ const PROTO = 2;
 const MAX_FRAME = 16000;            // SDP ma kilka kilobajtów; limit chroni przed śmieciami
 const MAX_AVATAR = 250 * 1024;      // obraz osoby: kwadratowy JPEG ok. 512 px, zwykle 30-80 KB
 const MAX_MEMBERS = 30;
+const MAX_PENDING = 5;              // tyle kont może jednocześnie czekać na akceptację
+const PENDING_DAYS = 14;            // nieakceptowane konto znika po tylu dniach
 const MEMBER_CACHE_MS = 30_000;     // Worker pamięta listę osób tyle czasu (zmiany admina widać po tym czasie we wszystkich lokalizacjach)
 const STALE_MS = 100_000;           // klient pinguje co ~25 s; brak życia przez 100 s = zerwane połączenie
 const SWEEP_MS = 60_000;            // jak często obiekt sprząta zerwane połączenia (alarm)
@@ -128,6 +132,8 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/" && request.method === "GET") return text("PoGGaduchy: OK\n", 200);
 
+    if (url.pathname === "/api/register" && request.method === "POST") return registerApi(request, env);
+
     const isApi = url.pathname === "/api/status" || url.pathname.startsWith("/api/avatar/") || url.pathname.startsWith("/api/admin/");
     if (url.pathname !== "/ws" && !isApi) return text("Not found", 404);
 
@@ -144,10 +150,11 @@ export default {
     const me = await authenticate(request, env);
     if (!me) return failed(401, "Unauthorized");
     const admin = request.headers.has("X-Admin-Key") ? await isAdmin(request, env) : false;
-    if (request.headers.has("X-Admin-Key") && !admin && url.pathname !== "/api/status") return failed(403, "Forbidden");
+    if (request.headers.has("X-Admin-Key") && !admin && url.pathname !== "/api/status" && url.pathname !== "/ws") return failed(403, "Forbidden");
 
     if (url.pathname === "/api/status") {
-      const out = { ok: true, proto: PROTO, id: me.id, name: me.name, admin, turn: !!(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) };
+      if (admin) await hub(env).noteAdmin(me.id);
+      const out = { ok: true, proto: PROTO, id: me.id, name: me.name, admin, pending: me.status === "pending", turn: !!(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) };
       if (url.searchParams.get("turn") === "1") { const t = await iceServers(env); out.turnWorks = t.relay; if (t.error) out.turnError = t.error; }
       return json(out);
     }
@@ -160,9 +167,27 @@ export default {
     headers.delete("Authorization");
     headers.delete("X-Admin-Key");
     headers.set("X-Member-Id", me.id);
+    if (admin) headers.set("X-Admin", "1");
     return hub(env).fetch(new Request(request, { headers }));
   },
 };
+
+async function registerApi(request, env) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (env.REGISTER_LIMITER) {
+    const { success } = await env.REGISTER_LIMITER.limit({ key: ip });
+    if (!success) return text("Too many attempts", 429);
+  }
+  if (parseInt(request.headers.get("content-length") || "0", 10) > 1024) return text("Too large", 413);
+  let body;
+  try { body = await request.json(); } catch { return text("Bad JSON", 400); }
+  const name = typeof body.name === "string" ? body.name.replace(/[\u0000-\u001f\u007f]/g, "").trim() : "";
+  if (name.length < 1 || name.length > 40 || !/^[0-9a-f]{64}$/.test(body.hash || "")) return text("Bad data", 400);
+  const r = await hub(env).register(name, body.hash);
+  if (r === "pending-full" || r === "full") return text("Too many pending accounts", 429);
+  memberCache.at = 0;
+  return json({ ok: true, id: r, pending: true });
+}
 
 async function avatarApi(request, env, url, me, admin) {
   const id = decodeURIComponent(url.pathname.slice("/api/avatar/".length));
@@ -196,14 +221,18 @@ async function adminApi(request, env, url, me, admin) {
   const rest = decodeURIComponent(url.pathname.slice("/api/admin/people".length)).replace(/^\//, "");
   if (!url.pathname.startsWith("/api/admin/people")) return text("Not found", 404);
   let body = {};
-  if (request.method === "POST" || request.method === "PATCH") {
+  const isAccept = /\/accept$/.test(rest);                     // akceptacja nie ma ciała żądania
+  if ((request.method === "POST" || request.method === "PATCH") && !isAccept) {
     if (parseInt(request.headers.get("content-length") || "0", 10) > 4096) return text("Too large", 413);
     try { body = await request.json(); } catch { return text("Bad JSON", 400); }
   }
   const okName = (n) => typeof n === "string" && n.trim().length >= 1 && n.trim().length <= 60;
   const okHash = (x) => typeof x === "string" && /^[0-9a-f]{64}$/.test(x);
   let r;
-  if (request.method === "POST" && rest === "") {
+  const acc = /^([a-z0-9][a-z0-9_-]{0,31})\/accept$/.exec(rest);
+  if (request.method === "POST" && acc) {
+    r = await h.acceptMember(acc[1]);
+  } else if (request.method === "POST" && rest === "") {
     if (!ID_RE.test(body.id || "") || !okName(body.name) || !okHash(body.hash)) return text("Bad data", 400);
     r = await h.addMember(body.id, body.name.trim(), body.hash);
   } else if (request.method === "PATCH" && ID_RE.test(rest)) {
@@ -228,7 +257,9 @@ export class Hub extends DurableObject {
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS members(
       id TEXT PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, avatar BLOB, av INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL)`);
+    try { this.sql.exec("ALTER TABLE members ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"); } catch { /* kolumna już jest */ }
     this.sql.exec("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS admins(id TEXT PRIMARY KEY)");
     this.seed();
     // Podtrzymywanie połączenia: "ping" -> "pong" bez budzenia obiektu (nie liczy się do limitów).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
@@ -248,15 +279,61 @@ export class Hub extends DurableObject {
   }
 
   // ---------------------------------------------------------------- osoby i obrazy (wołane z Workera przez RPC)
-  listMembers() {
-    return this.sql.exec("SELECT id, name, hash, CASE WHEN avatar IS NULL THEN 0 ELSE av END AS av FROM members ORDER BY rowid").toArray();
+  // Nieakceptowane konta znikają po PENDING_DAYS dniach.
+  purgeExpired() {
+    this.sql.exec("DELETE FROM members WHERE status = 'pending' AND created < ?", Date.now() - PENDING_DAYS * 86400_000);
   }
 
-  directory() { return this.listMembers().map((m) => ({ id: m.id, name: m.name, av: m.av })); }
+  listMembers() {
+    this.purgeExpired();
+    return this.sql.exec("SELECT id, name, hash, status, CASE WHEN avatar IS NULL THEN 0 ELSE av END AS av FROM members ORDER BY rowid").toArray();
+  }
+
+  adminIds() { return new Set(this.sql.exec("SELECT id FROM admins").toArray().map((r) => r.id)); }
+
+  noteAdmin(id) {
+    if (this.sql.exec("SELECT 1 FROM members WHERE id = ? AND status = 'active'", id).toArray().length)
+      this.sql.exec("INSERT OR IGNORE INTO admins(id) VALUES(?)", id);
+  }
+
+  // Lista osób widoczna dla danej osoby: zwykła osoba widzi aktywne konta; osoba z kontem NEW – tylko administratorów (i siebie);
+  // administrator widzi wszystkich, konta NEW oznaczone st:"new".
+  directoryFor(viewerId, viewerIsAdmin, rows = this.listMembers()) {
+    const admins = this.adminIds();
+    const viewer = rows.find((m) => m.id === viewerId);
+    const view = (m) => ({ id: m.id, name: m.name, av: m.av, ...(m.status === "pending" ? { st: "new" } : {}) });
+    if (viewerIsAdmin) return rows.map(view);
+    if (viewer?.status === "pending") return rows.filter((m) => m.id === viewerId || (m.status === "active" && admins.has(m.id))).map(view);
+    return rows.filter((m) => m.status === "active" || m.id === viewerId).map((m) => ({ id: m.id, name: m.name, av: m.av }));
+  }
 
   broadcastPeople() {
-    const msg = { t: "people", directory: this.directory() };
-    for (const ws of this.ctx.getWebSockets()) this.send(ws, msg);
+    const rows = this.listMembers();
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = this.att(ws);
+      this.send(ws, { t: "people", directory: this.directoryFor(a.id, !!a.adm, rows) });
+    }
+  }
+
+  // Samodzielne założenie konta: konto czeka na akceptację administratora. Zwraca id nowej osoby albo "pending-full" / "full".
+  register(name, hash) {
+    this.purgeExpired();
+    if (this.sql.exec("SELECT COUNT(*) AS n FROM members WHERE status = 'pending'").toArray()[0].n >= MAX_PENDING) return "pending-full";
+    if (this.sql.exec("SELECT COUNT(*) AS n FROM members").toArray()[0].n >= MAX_MEMBERS) return "full";
+    const base = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ł/gi, "l").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 22) || "osoba";
+    let id;
+    do { id = base + "-" + [...crypto.getRandomValues(new Uint8Array(2))].map((x) => x.toString(16).padStart(2, "0")).join(""); }
+    while (this.sql.exec("SELECT 1 FROM members WHERE id = ?", id).toArray().length);
+    this.sql.exec("INSERT INTO members(id, name, hash, status, created) VALUES(?, ?, ?, 'pending', ?)", id, name, hash, Date.now());
+    this.broadcastPeople();
+    return id;
+  }
+
+  acceptMember(id) {
+    if (!this.sql.exec("SELECT 1 FROM members WHERE id = ?", id).toArray().length) return "none";
+    this.sql.exec("UPDATE members SET status = 'active' WHERE id = ?", id);
+    this.broadcastPeople();
+    return "ok";
   }
 
   addMember(id, name, hash) {
@@ -281,6 +358,7 @@ export class Hub extends DurableObject {
   removeMember(id) {
     if (!this.sql.exec("SELECT 1 FROM members WHERE id = ?", id).toArray().length) return "none";
     this.sql.exec("DELETE FROM members WHERE id = ?", id);
+    this.sql.exec("DELETE FROM admins WHERE id = ?", id);
     this.dropSockets(id, "removed");
     this.broadcastPeople();
     this.broadcastPresence();
@@ -328,7 +406,9 @@ export class Hub extends DurableObject {
     // Hibernacja: obiekt "śpi" między wiadomościami. Znacznik = id osoby (jedno połączenie na osobę).
     this.ctx.acceptWebSocket(server, [mem.id]);
     const now = Date.now();
-    server.serializeAttachment({ id: mem.id, t0: now, seen: now, cid: null, peer: null, st: null, lost: 0, rl: [now, 0] });
+    const isAdmin = request.headers.get("X-Admin") === "1" && mem.status === "active";
+    if (isAdmin) this.noteAdmin(mem.id);
+    server.serializeAttachment({ id: mem.id, adm: isAdmin, t0: now, seen: now, cid: null, peer: null, st: null, lost: 0, rl: [now, 0] });
 
     for (const old of this.ctx.getWebSockets(mem.id)) {
       if (old === server) continue;
@@ -336,8 +416,8 @@ export class Hub extends DurableObject {
       try { old.close(4000, "replaced"); } catch { /* */ }
       this.dropSocket(old, false);
     }
-    this.send(server, { t: "welcome", proto: PROTO, me: { id: mem.id, name: mem.name },
-      directory: this.directory(), online: this.online(), serverTime: now });
+    this.send(server, { t: "welcome", proto: PROTO, me: { id: mem.id, name: mem.name, ...(mem.status === "pending" ? { st: "new" } : {}) },
+      directory: this.directoryFor(mem.id, isAdmin), online: this.onlineFor(mem.id, isAdmin), serverTime: now });
     this.broadcastPresence();
     await this.ensureAlarm();
     return new Response(null, { status: 101, webSocket: client });
@@ -369,9 +449,17 @@ export class Hub extends DurableObject {
     return out;
   }
 
+  // Obecność tylko osób, które dana osoba widzi na swojej liście (konta NEW nie wychodzą poza administratorów).
+  onlineFor(viewerId, viewerIsAdmin) {
+    const visible = new Set(this.directoryFor(viewerId, viewerIsAdmin).map((p) => p.id));
+    return Object.fromEntries(Object.entries(this.online()).filter(([id]) => visible.has(id)));
+  }
+
   broadcastPresence() {
-    const msg = { t: "presence", online: this.online() };
-    for (const ws of this.ctx.getWebSockets()) this.send(ws, msg);
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = this.att(ws);
+      this.send(ws, { t: "presence", online: this.onlineFor(a.id, !!a.adm) });
+    }
   }
 
   clearCall(ws) {
@@ -476,15 +564,21 @@ export class Hub extends DurableObject {
     const cid = String(m.cid || "").slice(0, 64), to = String(m.to || "");
     if (!/^[A-Za-z0-9_-]{8,64}$/.test(cid)) return;
     if (a.cid) return this.send(ws, { t: "end", cid, reason: "busy" });          // sam już rozmawiam
-    const known = to !== a.id && this.sql.exec("SELECT 1 FROM members WHERE id = ?", to).toArray().length > 0;
-    const target = known ? this.sockOf(to) : null;
+    const rows = this.listMembers();
+    const caller = rows.find((m) => m.id === a.id), callee = rows.find((m) => m.id === to);
+    const admins = this.adminIds();
+    // konto NEW dzwoni tylko do administratora, a dzwonić do konta NEW może tylko administrator
+    const allowed = !!caller && !!callee && to !== a.id
+      && (caller.status !== "pending" || (callee.status === "active" && admins.has(to)))
+      && (callee.status !== "pending" || !!a.adm);
+    const target = allowed ? this.sockOf(to) : null;
     if (!target) return this.send(ws, { t: "end", cid, reason: "offline" });
     const ta = this.att(target);
     if (ta.cid) return this.send(ws, { t: "end", cid, reason: "busy" });
     const video = !!m.video;
     Object.assign(a, { cid, peer: to, st: "ringing", lost: 0 }); this.save(ws, a);
     Object.assign(ta, { cid, peer: a.id, st: "ringing", lost: 0 }); this.save(target, ta);
-    this.send(target, { t: "ring", cid, from: a.id, video });
+    this.send(target, { t: "ring", cid, from: a.id, name: caller.name, video });
     this.send(ws, { t: "ringing", cid });
     this.broadcastPresence();
   }

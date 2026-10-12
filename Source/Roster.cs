@@ -14,6 +14,7 @@ public sealed class Roster
     readonly ServerApi _api;
     readonly DispatcherTimer _retry = new() { Interval = TimeSpan.FromSeconds(30) };
     bool _syncing;
+    readonly HashSet<string> _announcedNew = new();
 
     Roster(AppSettings settings, ServerApi api)
     {
@@ -51,6 +52,7 @@ public sealed class Roster
     {
         _settings.MyId = m.GetProperty("me").GetProperty("id").GetString() ?? "";
         _settings.MyName = m.GetProperty("me").GetProperty("name").GetString() ?? "";
+        _settings.MyIsNew = m.GetProperty("me").TryGetProperty("st", out var mst) && mst.GetString() == "new";
         ApplyDirectory(m.GetProperty("directory"));
         if (m.TryGetProperty("online", out var online)) ApplyPresence(_settings, online);
     }
@@ -64,13 +66,18 @@ public sealed class Roster
             var id = d.GetProperty("id").GetString() ?? "";
             var name = d.GetProperty("name").GetString() ?? id;
             var av = d.TryGetProperty("av", out var a) && a.TryGetInt32(out var n) ? n : 0;
+            var isNew = d.TryGetProperty("st", out var st) && st.GetString() == "new";
             if (id == "") continue;
-            if (id == meId) { _settings.MyName = name; _settings.MyAv = av; continue; }
+            if (id == meId) { _settings.MyName = name; _settings.MyAv = av; _settings.MyIsNew = isNew; continue; }
             seen.Add(id);
             var p = _settings.Contacts.FirstOrDefault(c => c.Id == id);
             if (p == null) { p = new Person { Id = id, ServerName = name }; _settings.Contacts.Add(p); }
             else p.ServerName = name;
             p.RemoteAv = av;
+            p.IsNew = isNew;
+            // administrator dowiaduje się o nowym koncie (raz dla każdego)
+            if (isNew && _announcedNew.Add(id))
+                Services.Calls?.RaiseNotice($"Nowe konto czeka na akceptację: {name}. Zaakceptuj je w Ustawieniach (Osoby).");
         }
         // Osoby, których nie ma już w katalogu serwera, nie mogą być wywołane – znikają też z listy.
         foreach (var gone in _settings.Contacts.Where(c => !seen.Contains(c.Id)).ToList())

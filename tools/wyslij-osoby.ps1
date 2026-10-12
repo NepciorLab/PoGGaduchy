@@ -3,8 +3,8 @@
 . (Join-Path $PSScriptRoot 'lib.ps1')
 if (-not (Test-Path $MembersFile)) { throw 'Brak server\members.json – najpierw dodaj osoby: .\tools\dodaj-osobe.ps1' }
 $json = (Get-Content $MembersFile -Raw -Encoding UTF8).Trim()
-$count = @($json | ConvertFrom-Json).Count
+$count = ($json | ConvertFrom-Json | Measure-Object).Count
 Write-Host "Wysyłam listę $count osób do Cloudflare (sekret MEMBERS)…"
 $json | Invoke-Wrangler secret put MEMBERS
 if ($LASTEXITCODE -ne 0) { throw 'Nie udało się zapisać sekretu MEMBERS.' }
-Write-Host 'Gotowe. Serwer korzysta z nowej listy od razu (połączone programy mogą wymagać ponownego połączenia).'
+Write-Host 'Gotowe. Nowy sekret rozchodzi się po sieci Cloudflare przez ok. minutę (do tego czasu nowe klucze mogą dawać błąd 401).'

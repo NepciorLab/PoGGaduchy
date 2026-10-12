@@ -20,12 +20,12 @@ function Use-Node {
 }
 
 function Invoke-Wrangler {
-    param([Parameter(ValueFromRemainingArguments)]$WranglerArgs)
+    $in = @($input)
     Use-Node
     $w = Join-Path $ServerDir 'node_modules\.bin\wrangler.cmd'
     if (-not (Test-Path $w)) { Push-Location $ServerDir; try { npm install --no-audit --no-fund } finally { Pop-Location } }
     Push-Location $ServerDir
-    try { & $w @WranglerArgs } finally { Pop-Location }
+    try { if ($in.Count) { $in | & $w @args } else { & $w @args } } finally { Pop-Location }
 }
 
 function New-Key {
@@ -40,11 +40,16 @@ function Get-Sha256Hex([string]$Text) {
 }
 
 function Read-Members {
-    if (Test-Path $MembersFile) { @(Get-Content $MembersFile -Raw -Encoding UTF8 | ConvertFrom-Json) } else { @() }
+    if (-not (Test-Path $MembersFile)) { return @() }
+    $raw = (Get-Content $MembersFile -Raw -Encoding UTF8).Trim()
+    if (-not $raw -or $raw -eq '[]') { return @() }
+    $parsed = $raw | ConvertFrom-Json
+    foreach ($m in $parsed) { [pscustomobject]@{ id = [string]$m.id; name = [string]$m.name; hash = [string]$m.hash } }
 }
 
 function Save-Members($List) {
-    $json = ConvertTo-Json -InputObject @($List) -Compress -Depth 4
+    $items = foreach ($m in @($List)) { ConvertTo-Json -InputObject ([ordered]@{ id = [string]$m.id; name = [string]$m.name; hash = [string]$m.hash }) -Compress }
+    $json = '[' + (@($items) -join ',') + ']'
     [IO.File]::WriteAllText($MembersFile, $json, (New-Object Text.UTF8Encoding($false)))
 }
 

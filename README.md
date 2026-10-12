@@ -62,7 +62,7 @@ rozmowy w prawym dolnym rogu świeci duża czerwona słuchawka. Rozmowy toczą s
 * **Dostęp**: każda kopia programu ma długi, losowy, tajny klucz (256 bitów). Serwer zna tylko **skróty SHA-256** dozwolonych
   kluczy. Obca osoba bez klucza nie może ani się zalogować, ani zadzwonić do rodziny; błędne próby z jednego adresu IP są
   ograniczane (po 10 w minucie – odpowiedź 429), a ramki z jednego połączenia mają limit szybkości i rozmiaru.
-* **TURN**: gdy bezpośrednie połączenie nie jest możliwe (np. za zaporą), obraz i dźwięk idą przez Cloudflare Realtime TURN.
+* **TURN** (jeśli skonfigurowany; patrz niżej): gdy bezpośrednie połączenie nie jest możliwe (np. za zaporą), obraz i dźwięk idą przez Cloudflare Realtime TURN.
   Dane uwierzytelniające wydaje serwer i ważne są tylko przez ograniczony czas (domyślnie 6 godzin).
 * **Limity darmowego planu Cloudflare** (m.in. 100 000 żądań dziennie) wystarczają dla ok. 10 osób: program nie wysyła
   „pingów” co sekundę, a podtrzymanie połączenia idzie przez auto-odpowiedź.
@@ -82,8 +82,11 @@ cd ..
 .\tools\wdroz.ps1                            # wdraża serwer i zapisuje jego adres (*.workers.dev)
 ```
 
-**TURN**: w panelu Cloudflare (Realtime → TURN Server → Create) utwórz klucz TURN, a potem wpisz jego dane skryptem
-(wartości wpisujesz samodzielnie, skrypt ich nie wyświetla i nie zapisuje w plikach):
+**TURN (opcjonalnie, ale zalecane)**: bez niego program działa na samych serwerach STUN, co wystarcza w większości domowych
+sieci, ale rozmowa nie połączy się, gdy któraś osoba jest za „trudnym” routerem (CGNAT u operatora, sieć firmowa).
+Cloudflare wymaga do włączenia Realtime podania metody płatności (pierwsze 1000 GB miesięcznie jest bezpłatne; płatne jest
+dopiero to, co ponad limit). Po utworzeniu klucza (panel Cloudflare: Realtime → TURN Server → Create) wpisz jego dane
+skryptem (wartości wpisujesz samodzielnie, skrypt ich nie wyświetla i nie zapisuje w plikach):
 
 ```powershell
 .\tools\ustaw-turn.ps1
@@ -177,6 +180,9 @@ Zmienne środowiskowe tylko do testów: `PGG_DATA` (inny folder danych), `PGG_FA
 ## Znane ograniczenia
 
 * Program musi być uruchomiony, a komputer nie może być uśpiony, żeby dało się do niego zadzwonić.
+* **Bez skonfigurowanego TURN** (stan domyślny, dopóki nie wykonasz kroku z `ustaw-turn.ps1`) rozmowa łączy się tylko wtedy,
+  gdy da się ją nawiązać bezpośrednio między komputerami. Ścieżka przez przekaźnik TURN jest zaimplementowana, ale
+  **nie była jeszcze sprawdzona w praktyce**.
 * Zapora Windows przy pierwszym połączeniu może zapytać o zgodę dla składnika `msedgewebview2.exe` (nie sprawdzano na
   świeżym systemie).
 * Brak składnika WebView2 (rzadko, na starym Windows 10) uniemożliwia rozmowy; program pokazuje wtedy komunikat.

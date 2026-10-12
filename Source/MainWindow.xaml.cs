@@ -58,7 +58,6 @@ public partial class MainWindow : Window
         }
         DataContext = settings;
         _view = CollectionViewSource.GetDefaultView(settings.Contacts);
-        _view.Filter = o => o is Person { Hidden: false };
         ContactList.ItemsSource = _view;
         foreach (var p in settings.Contacts) p.PropertyChanged += OnPersonChanged;
         settings.Contacts.CollectionChanged += (_, e) =>
@@ -149,8 +148,7 @@ public partial class MainWindow : Window
 
     void OnPersonChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(Person.Hidden)) Dispatcher.BeginInvoke(() => { _view.Refresh(); UpdateDetail(); });
-        else if (sender == _subscribed && e.PropertyName is nameof(Person.Presence) or nameof(Person.Name)) Dispatcher.BeginInvoke(UpdateCallButton);
+        if (sender == _subscribed && e.PropertyName is nameof(Person.Presence) or nameof(Person.Name)) Dispatcher.BeginInvoke(UpdateCallButton);
     }
 
     void UpdateDetail()
@@ -257,10 +255,9 @@ public partial class MainWindow : Window
     void OpenSettings()
     {
         var selectedId = Selected?.Id;
-        new SettingsWindow(_settings, _sig, _identity) { Owner = this }.ShowDialog();
+        ((App)Application.Current).OpenSettings(this);
         SettingsStore.Save(_settings);
-        _view.Refresh();
-        ContactList.SelectedItem = _settings.Contacts.FirstOrDefault(c => c.Id == selectedId && !c.Hidden);
+        ContactList.SelectedItem = _settings.Contacts.FirstOrDefault(c => c.Id == selectedId);
         UpdateDetail();
         RefreshBanner();
     }

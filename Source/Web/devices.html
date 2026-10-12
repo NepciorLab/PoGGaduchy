@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Urządzenia</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0B1B2B; color: #fff; font-family: "Segoe UI", system-ui, sans-serif; user-select: none; }
+  #wrap { position: absolute; inset: 0; display: flex; flex-direction: column; }
+  #view { position: relative; flex: 1; min-height: 0; background: #000; display: flex; align-items: center; justify-content: center; }
+  video { width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); display: none; }
+  #msg { position: absolute; left: 0; right: 0; text-align: center; font-size: 20px; padding: 0 16px; color: #FFD27A; }
+  #meter { height: 22px; background: #16385B; position: relative; }
+  #bar { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #2EA043; transition: width 0.08s linear; }
+  #cap { position: absolute; left: 8px; top: 2px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"><video id="v" autoplay playsinline muted></video><div id="msg"></div></div>
+  <div id="meter"><div id="bar"></div><div id="cap">Poziom mikrofonu</div></div>
+</div>
+<script>
+"use strict";
+const host = window.chrome && window.chrome.webview;
+const post = (o) => { try { host.postMessage(o); } catch (e) { /* poza programem */ } };
+const $ = (id) => document.getElementById(id);
+
+// Nazwy urządzeń porównujemy bez przedrostków "Default - " / "Communications - " i bez identyfikatora sprzętu "(046d:0825)".
+const norm = (l) => (l || "").replace(/^(default|communications|domyślne|domyślny|komunikacja)\s*-\s*/i, "").replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "").trim();
+let devs = [], stream = null, raf = 0, ctx = null, sinkId = "";
+
+async function enumerate() {
+  let list = await navigator.mediaDevices.enumerateDevices();
+  if (list.some((d) => !d.label)) {                 // etykiety są dostępne dopiero po jednorazowym użyciu urządzeń
+    for (const c of [{ audio: true }, { video: true }]) {
+      try { (await navigator.mediaDevices.getUserMedia(c)).getTracks().forEach((t) => t.stop()); } catch (e) { /* brak urządzenia */ }
+    }
+    list = await navigator.mediaDevices.enumerateDevices();
+  }
+  devs = list;
+  const names = (kind) => {
+    const seen = new Set(), out = [];
+    for (const d of list) {
+      if (d.kind !== kind || d.deviceId === "default" || d.deviceId === "communications") continue;
+      const n = norm(d.label);
+      if (n && !seen.has(n.toLowerCase())) { seen.add(n.toLowerCase()); out.push(n); }
+    }
+    return out;
+  };
+  post({ type: "devices", mic: names("audioinput"), speaker: names("audiooutput"), camera: names("videoinput") });
+}
+
+function findId(kind, label) {
+  if (!label) return "";
+  const want = norm(label).toLowerCase();
+  const cands = devs.filter((d) => d.kind === kind && d.deviceId !== "default" && d.deviceId !== "communications");
+  const hit = cands.find((d) => norm(d.label).toLowerCase() === want) || cands.find((d) => norm(d.label).toLowerCase().includes(want));
+  return hit ? hit.deviceId : "";
+}
+
+function stop() {
+  cancelAnimationFrame(raf);
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  if (ctx) { try { ctx.close(); } catch (e) { /* */ } ctx = null; }
+  $("v").style.display = "none"; $("v").srcObject = null; $("bar").style.width = "0";
+}
+
+async function preview(m) {
+  stop();
+  $("msg").textContent = "";
+  const camId = findId("videoinput", m.camera), micId = findId("audioinput", m.mic);
+  const res = { type: "preview", camera: false, mic: false };
+  let s = new MediaStream();
+  try {
+    const a = await navigator.mediaDevices.getUserMedia({ audio: micId ? { deviceId: { exact: micId } } : true });
+    a.getAudioTracks().forEach((t) => s.addTrack(t)); res.mic = true;
+  } catch (e) { /* brak mikrofonu */ }
+  try {
+    const v = await navigator.mediaDevices.getUserMedia({ video: camId ? { deviceId: { exact: camId }, width: { ideal: 640 }, height: { ideal: 360 } } : { width: { ideal: 640 }, height: { ideal: 360 } } });
+    v.getVideoTracks().forEach((t) => s.addTrack(t)); res.camera = true;
+  } catch (e) { $("msg").textContent = "Nie można włączyć kamery (brak kamery albo używa jej inny program)."; }
+  stream = s;
+  if (res.camera) { $("v").srcObject = s; $("v").style.display = "block"; }
+  if (res.mic) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const an = ctx.createAnalyser(); an.fftSize = 512;
+    ctx.createMediaStreamSource(s).connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    const tick = () => {
+      an.getByteTimeDomainData(buf);
+      let sum = 0; for (let i = 0; i < buf.length; i++) { const x = (buf[i] - 128) / 128; sum += x * x; }
+      $("bar").style.width = Math.min(100, Math.sqrt(sum / buf.length) * 300) + "%";
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+  } else $("cap").textContent = "Nie wykryto mikrofonu";
+  post(res);
+}
+
+function wav() {
+  const rate = 22050, n = rate * 0.6, b = new DataView(new ArrayBuffer(44 + n * 2));
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) b.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); b.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt "); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
+  b.setUint32(24, rate, true); b.setUint32(28, rate * 2, true); b.setUint16(32, 2, true); b.setUint16(34, 16, true); str(36, "data"); b.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const env = Math.min(1, i / 800, (n - i) / 800); b.setInt16(44 + i * 2, Math.sin(2 * Math.PI * 660 * i / rate) * 0.5 * 32767 * env, true); }
+  return new Blob([b], { type: "audio/wav" });
+}
+
+async function tone(label) {
+  const a = new Audio(URL.createObjectURL(wav()));
+  const id = findId("audiooutput", label);
+  try { if (id && a.setSinkId) await a.setSinkId(id); } catch (e) { /* zostaje domyślne */ }
+  a.play().catch(() => {});
+}
+
+host && host.addEventListener("message", (e) => {
+  const m = e.data;
+  if (!m || !m.type) return;
+  if (m.type === "preview") preview(m);
+  else if (m.type === "stop") stop();
+  else if (m.type === "tone") tone(m.speaker);
+});
+enumerate().then(() => post({ type: "ready" })).catch((e) => post({ type: "error", msg: String(e) }));
+</script>
+</body>
+</html>

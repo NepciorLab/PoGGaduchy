@@ -32,29 +32,12 @@ public partial class CallWindow : Window
             var env = await WebViewHost.GetEnvironmentAsync();
             await Web.EnsureCoreWebView2Async(env);
             var core = Web.CoreWebView2;
-            var s = core.Settings;
-            s.AreDefaultContextMenusEnabled = false;
-            s.AreDevToolsEnabled = Environment.GetEnvironmentVariable("PGG_DEVTOOLS") == "1";
-            s.IsZoomControlEnabled = false;
-            s.IsStatusBarEnabled = false;
-            s.IsSwipeNavigationEnabled = false;
-            s.IsPinchZoomEnabled = false;
-            s.AreBrowserAcceleratorKeysEnabled = false;
-            s.IsGeneralAutofillEnabled = false;
-            s.IsPasswordAutosaveEnabled = false;
-
-            // Strona rozmowy jest wbudowana w program i serwowana pod "fałszywym" adresem https (bezpieczny kontekst dla kamery).
-            core.AddWebResourceRequestedFilter(WebViewHost.Origin + "/*", CoreWebView2WebResourceContext.All);
-            core.WebResourceRequested += OnResourceRequested;
-            core.PermissionRequested += OnPermissionRequested;
-            core.NavigationStarting += (_, e) => { if (!e.Uri.StartsWith(WebViewHost.Origin + "/", StringComparison.Ordinal)) e.Cancel = true; };
-            core.NewWindowRequested += (_, e) => e.Handled = true;
+            WebViewHost.Attach(core);
             core.WebMessageReceived += (_, e) =>
             {
                 try { PageMessage?.Invoke(JsonDocument.Parse(e.WebMessageAsJson).RootElement.Clone()); }
                 catch (Exception ex) { Log.Write("Wiadomość ze strony: " + ex.Message); }
             };
-            core.ProcessFailed += (_, e) => Log.Write("WebView2: proces " + e.ProcessFailedKind + " zakończył się błędem (" + e.Reason + ")");
             core.Navigate(WebViewHost.Origin + "/call.html");
             Web.Visibility = Visibility.Visible;
             return true;
@@ -65,29 +48,6 @@ public partial class CallWindow : Window
             ShowError("Do rozmów wideo potrzebny jest składnik Microsoft Edge WebView2. Program spróbuje go przygotować; jeśli to się nie uda, trzeba go zainstalować.");
             return false;
         }
-    }
-
-    void OnResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
-    {
-        var core = Web.CoreWebView2;
-        var path = new Uri(e.Request.Uri).AbsolutePath.TrimStart('/');
-        var stream = path == "call.html" ? WebViewHost.OpenResource("Web.call.html") : null;
-        if (stream == null)
-        {
-            e.Response = core.Environment.CreateWebResourceResponse(null, 404, "Not Found", "");
-            return;
-        }
-        e.Response = core.Environment.CreateWebResourceResponse(stream, 200, "OK",
-            "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nPermissions-Policy: camera=(self), microphone=(self)");
-    }
-
-    // Kamera i mikrofon: zgoda raz na stałe, tylko dla wbudowanej strony rozmowy – żadnych pytań w trakcie rozmowy.
-    void OnPermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs e)
-    {
-        var ours = e.Uri.StartsWith(WebViewHost.Origin + "/", StringComparison.Ordinal);
-        var media = e.PermissionKind is CoreWebView2PermissionKind.Camera or CoreWebView2PermissionKind.Microphone;
-        e.State = ours && media ? CoreWebView2PermissionState.Allow : CoreWebView2PermissionState.Deny;
-        e.SavesInProfile = true;
     }
 
     public void Post(object message)

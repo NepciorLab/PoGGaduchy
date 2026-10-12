@@ -42,98 +42,53 @@ public abstract class Observable : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
-/// <summary>Osoba z katalogu serwera. Nazwa i zdjęcie są własne (lokalne), niezależne od nazwy na serwerze.</summary>
+/// <summary>Osoba z katalogu serwera. Nazwę i obraz ustala serwer (obraz zmienia sama osoba albo administrator).</summary>
 public sealed class Person : Observable
 {
-    public const double MinZoom = 0.25, MaxZoom = 6;
-
-    string _serverName = "", _customName = "", _imageFile = "";
-    double _zoom = 1, _cx = 0.5, _cy = 0.5;
-    int _rotation, _presence;
-    bool _hidden, _autoAnswer;
-    ImageSource? _image, _base;
+    string _serverName = "";
+    int _avatarVer, _presence;
+    bool _autoAnswer;
+    ImageSource? _image;
     bool _imageLoaded;
 
     /// <summary>Identyfikator osoby na serwerze (np. "mama").</summary>
     public string Id { get; set; } = "";
 
-    /// <summary>Nazwa nadana na serwerze (domyślna).</summary>
+    /// <summary>Nazwa nadana na serwerze (zmienia ją administrator).</summary>
     public string ServerName
     {
         get => _serverName;
         set { if (Set(ref _serverName, value ?? "")) { Raise(nameof(Name)); Raise(nameof(Initial)); } }
     }
 
-    /// <summary>Własna nazwa (pusta = używana jest nazwa z serwera).</summary>
-    public string CustomName
-    {
-        get => _customName;
-        set { if (Set(ref _customName, value ?? "")) { Raise(nameof(Name)); Raise(nameof(Initial)); } }
-    }
-
-    /// <summary>Nazwa wyświetlana. Zapis ustawia własną nazwę.</summary>
-    [JsonIgnore]
-    public string Name
-    {
-        get => string.IsNullOrWhiteSpace(_customName) ? _serverName : _customName;
-        set => CustomName = value == _serverName ? "" : value;
-    }
-
-    /// <summary>Osoba ukryta na liście kafelków.</summary>
-    public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
+    [JsonIgnore] public string Name => _serverName;
 
     /// <summary>Rozmowa od tej osoby jest odbierana automatycznie (osoba zaufana).</summary>
     public bool AutoAnswer { get => _autoAnswer; set => Set(ref _autoAnswer, value); }
 
-    /// <summary>Nazwa pliku ze zdjęciem w folderze images.</summary>
-    public string ImageFile
+    /// <summary>Numer wersji obrazu, który mamy zapisany na dysku (0 = brak obrazu). Zmiana wymusza ponowne wczytanie.</summary>
+    public int AvatarVer
     {
-        get => _imageFile;
+        get => _avatarVer;
         set
         {
-            if (!Set(ref _imageFile, value)) return;
-            _base = null;
+            if (!Set(ref _avatarVer, value)) return;
             _imageLoaded = false;
-            Raise(nameof(Image));
-            Raise(nameof(Crop));
+            Raise(nameof(Image)); Raise(nameof(Crop));
         }
     }
 
-    /// <summary>Powiększenie zdjęcia: 1 = największy kwadrat z całego zdjęcia, więcej = przybliżenie, mniej = zdjęcie pomniejszone w ramce.</summary>
-    public double ImageZoom
+    /// <summary>Numer wersji obrazu na serwerze (nie zapisywany; używany do pobierania).</summary>
+    [JsonIgnore] public int RemoteAv { get; set; }
+
+    [JsonIgnore] public string Initial => string.IsNullOrWhiteSpace(Name) ? "?" : Name.Trim()[..1].ToUpperInvariant();
+
+    /// <summary>Wymusza ponowne wczytanie obrazu z dysku (po pobraniu nowego pliku).</summary>
+    public void ReloadImage()
     {
-        get => _zoom;
-        set { if (Set(ref _zoom, Math.Clamp(value, MinZoom, MaxZoom))) { Raise(nameof(Crop)); Raise(nameof(ZoomSlider)); } }
+        _imageLoaded = false;
+        Raise(nameof(Image)); Raise(nameof(Crop));
     }
-
-    /// <summary>Wartość dla suwaka: logarytm z powiększenia (środek suwaka = rozmiar normalny).</summary>
-    [JsonIgnore]
-    public double ZoomSlider
-    {
-        get => Math.Log2(_zoom);
-        set => ImageZoom = Math.Pow(2, value);
-    }
-
-    /// <summary>Środek kadru (0..1 w poziomie i w pionie względem całego zdjęcia).</summary>
-    public double ImageCenterX { get => _cx; set { if (Set(ref _cx, Math.Clamp(value, -1, 2))) Raise(nameof(Crop)); } }
-    public double ImageCenterY { get => _cy; set { if (Set(ref _cy, Math.Clamp(value, -1, 2))) Raise(nameof(Crop)); } }
-
-    /// <summary>Obrót zdjęcia o wielokrotność 90° (0, 90, 180, 270), zgodnie z ruchem wskazówek zegara.</summary>
-    public int ImageRotation
-    {
-        get => _rotation;
-        set
-        {
-            var v = ((value % 360) + 360) % 360 / 90 * 90;
-            if (!Set(ref _rotation, v)) return;
-            _imageLoaded = false;
-            Raise(nameof(Image));
-            Raise(nameof(Crop));
-        }
-    }
-
-    [JsonIgnore]
-    public string Initial => string.IsNullOrWhiteSpace(Name) ? "?" : Name.Trim()[..1].ToUpperInvariant();
 
     // ---------- obecność (nie zapisywana) ----------
 
@@ -162,23 +117,62 @@ public sealed class Person : Observable
         {
             if (!_imageLoaded)
             {
-                _base ??= SettingsStore.LoadImage(_imageFile);
-                _image = _base;
-                if (_base is BitmapSource bmp && _rotation != 0)
-                {
-                    var rotated = new TransformedBitmap(bmp, new RotateTransform(_rotation));
-                    rotated.Freeze();
-                    _image = rotated;
-                }
+                _image = _avatarVer > 0 ? SettingsStore.LoadFile(SettingsStore.AvatarPath(Id)) : null;
                 _imageLoaded = true;
             }
             return _image;
         }
     }
 
-    /// <summary>Kwadratowy wycinek zdjęcia (w ułamkach całego obrazu), do użycia jako ImageBrush.Viewbox.
+    /// <summary>Obraz z serwera jest już przycięty do kwadratu, więc wycinek to cały obraz (potrzebny do ImageBrush.Viewbox).</summary>
+    [JsonIgnore] public Rect Crop => new(0, 0, 1, 1);
+}
+
+/// <summary>
+/// Kadrowanie zdjęcia przed wysłaniem na serwer: przesuwanie, powiększanie, pomniejszanie i obrót o 90°.
+/// Wynik to kwadratowy JPEG (to, co widać w ramce).
+/// </summary>
+public sealed class CropModel : Observable
+{
+    public const double MinZoom = 0.25, MaxZoom = 6;
+    double _zoom = 1, _cx = 0.5, _cy = 0.5;
+    int _rotation;
+    BitmapSource? _source;
+    ImageSource? _image;
+
+    /// <summary>Wczytane zdjęcie (przed obrotem); null, gdy nic nie wybrano.</summary>
+    public BitmapSource? Source
+    {
+        get => _source;
+        set { _source = value; _rotation = 0; ResetCrop(); RaiseImage(); }
+    }
+
+    public double Zoom
+    {
+        get => _zoom;
+        set { if (Set(ref _zoom, Math.Clamp(value, MinZoom, MaxZoom))) { Raise(nameof(Crop)); Raise(nameof(ZoomSlider)); } }
+    }
+
+    /// <summary>Wartość dla suwaka: logarytm z powiększenia (środek suwaka = rozmiar normalny).</summary>
+    public double ZoomSlider { get => Math.Log2(_zoom); set => Zoom = Math.Pow(2, value); }
+
+    public ImageSource? Image
+    {
+        get
+        {
+            if (_image == null && _source != null)
+            {
+                _image = _source;
+                if (_rotation != 0) { var t = new TransformedBitmap(_source, new RotateTransform(_rotation)); t.Freeze(); _image = t; }
+            }
+            return _image;
+        }
+    }
+
+    void RaiseImage() { _image = null; Raise(nameof(Image)); Raise(nameof(Crop)); }
+
+    /// <summary>Kwadratowy wycinek zdjęcia (ułamki całego obrazu), do użycia jako ImageBrush.Viewbox.
     /// Dla powiększenia poniżej 1 wycinek jest większy niż zdjęcie – poza zdjęciem widać tło ramki.</summary>
-    [JsonIgnore]
     public Rect Crop
     {
         get
@@ -193,7 +187,6 @@ public sealed class Person : Observable
         }
     }
 
-    // Wycinek mniejszy od zdjęcia musi w nim zostać; wycinek większy od zdjęcia może się przesuwać tak, by zdjęcie nie wyszło poza ramkę.
     static double ClampCenter(double c, double size)
     {
         var lo = Math.Min(size / 2, 1 - size / 2);
@@ -205,35 +198,45 @@ public sealed class Person : Observable
     public void Pan(double dx, double dy)
     {
         var c = Crop;
-        ImageCenterX = c.X + c.Width / 2 - dx * c.Width;
-        ImageCenterY = c.Y + c.Height / 2 - dy * c.Height;
+        _cx = Math.Clamp(c.X + c.Width / 2 - dx * c.Width, -1, 2);
+        _cy = Math.Clamp(c.Y + c.Height / 2 - dy * c.Height, -1, 2);
+        Raise(nameof(Crop));
     }
 
     /// <summary>Obraca zdjęcie o 90° i przenosi środek kadru tak, by ta sama część zdjęcia została w ramce.</summary>
     public void Rotate(bool clockwise)
     {
+        if (_source == null) return;
         var c = Crop;
         double x = c.X + c.Width / 2, y = c.Y + c.Height / 2;
-        var (nx, ny) = clockwise ? (1 - y, x) : (y, 1 - x);
-        _cx = nx; _cy = ny;
-        Raise(nameof(ImageCenterX)); Raise(nameof(ImageCenterY));
-        ImageRotation += clockwise ? 90 : -90;
+        (_cx, _cy) = clockwise ? (1 - y, x) : (y, 1 - x);
+        _rotation = ((_rotation + (clockwise ? 90 : -90)) % 360 + 360) % 360;
+        RaiseImage();
     }
 
     public void ResetCrop()
     {
         _zoom = 1; _cx = 0.5; _cy = 0.5;
-        Raise(nameof(ImageZoom)); Raise(nameof(ZoomSlider)); Raise(nameof(ImageCenterX)); Raise(nameof(ImageCenterY)); Raise(nameof(Crop));
+        Raise(nameof(Zoom)); Raise(nameof(ZoomSlider)); Raise(nameof(Crop));
     }
 
-    /// <summary>Po wybraniu nowego pliku ze zdjęciem (lub usunięciu) wracamy do ustawień domyślnych.</summary>
-    public void SetImage(string file)
+    /// <summary>Rysuje to, co widać w ramce, jako kwadratowy JPEG (domyślnie 512 x 512).</summary>
+    public byte[]? RenderJpeg(int size = 512, int quality = 85)
     {
-        _base = null;
-        _rotation = 0;
-        ResetCrop();
-        ImageFile = file;
-        Raise(nameof(ImageRotation));
+        if (Image is not BitmapSource) return null;
+        var dv = new DrawingVisual();
+        using (var dc = dv.RenderOpen())
+        {
+            dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x4C, 0x7F, 0xB0)), null, new Rect(0, 0, size, size));
+            dc.DrawRectangle(new ImageBrush(Image) { Viewbox = Crop, Stretch = Stretch.UniformToFill }, null, new Rect(0, 0, size, size));
+        }
+        var rtb = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
+        rtb.Render(dv);
+        var enc = new JpegBitmapEncoder { QualityLevel = quality };
+        enc.Frames.Add(BitmapFrame.Create(rtb));
+        using var ms = new MemoryStream();
+        enc.Save(ms);
+        return ms.ToArray();
     }
 }
 
@@ -243,6 +246,7 @@ public sealed class AppSettings : Observable
     static readonly double Scale = Math.Clamp(SystemParameters.PrimaryScreenHeight / 1080.0, 1.0, 2.5);
     double _tileWidth = Math.Round(560 * Scale), _tileHeight = Math.Round(160 * Scale), _nameFontSize = Math.Round(36 * Scale);
     bool _autoUpdate = true, _silentUpdate = true, _autostart = true;
+    string _micLabel = "", _speakerLabel = "", _cameraLabel = "";
 
     public double TileWidth { get => _tileWidth; set => Set(ref _tileWidth, Math.Clamp(value, 260, 1000)); }
     public double TileHeight { get => _tileHeight; set => Set(ref _tileHeight, Math.Clamp(value, 80, 320)); }
@@ -257,9 +261,18 @@ public sealed class AppSettings : Observable
     /// <summary>Uruchamianie razem z Windows.</summary>
     public bool Autostart { get => _autostart; set => Set(ref _autostart, value); }
 
+    /// <summary>Wybrane urządzenia (nazwy, jak w Windows; puste = domyślne urządzenie systemu).</summary>
+    public string MicLabel { get => _micLabel; set => Set(ref _micLabel, value ?? ""); }
+    public string SpeakerLabel { get => _speakerLabel; set => Set(ref _speakerLabel, value ?? ""); }
+    public string CameraLabel { get => _cameraLabel; set => Set(ref _cameraLabel, value ?? ""); }
+
     /// <summary>Moje id i nazwa (z ostatniego połączenia z serwerem).</summary>
     public string MyId { get; set; } = "";
     public string MyName { get; set; } = "";
+
+    /// <summary>Wersja mojego obrazu na serwerze (0 = brak) i ta zapisana na dysku (do podglądu w ustawieniach).</summary>
+    [JsonIgnore] public int MyAv { get; set; }
+    public int MyAvLocal { get; set; }
 
     public ObservableCollection<Person> Contacts { get; set; } = new();
 }
@@ -298,6 +311,9 @@ public static class SettingsStore
     public static string WebViewDir => Path.Combine(DataDir, "webview2");
     static string SettingsPath => Path.Combine(DataDir, "settings.json");
 
+    /// <summary>Plik z obrazem osoby pobranym z serwera.</summary>
+    public static string AvatarPath(string id) => Path.Combine(ImagesDir, "avatar-" + id + ".jpg");
+
     public static AppSettings Load()
     {
         try
@@ -325,25 +341,13 @@ public static class SettingsStore
         catch (Exception ex) { Log.Write("Nie udało się zapisać ustawień: " + ex.Message); }
     }
 
-    /// <summary>Kopiuje wybrany obraz do folderu aplikacji i zwraca nazwę pliku.</summary>
-    public static string ImportImage(string sourcePath)
+    /// <summary>Wczytuje obraz z pliku (dowolnej ścieżki). Duże zdjęcia z aparatu zmniejsza przy wczytywaniu, ale zostawia zapas na powiększanie.</summary>
+    public static BitmapSource? LoadFile(string path)
     {
-        Directory.CreateDirectory(ImagesDir);
-        var name = Guid.NewGuid().ToString("N") + Path.GetExtension(sourcePath).ToLowerInvariant();
-        File.Copy(sourcePath, Path.Combine(ImagesDir, name), true);
-        return name;
-    }
-
-    public static ImageSource? LoadImage(string file)
-    {
-        if (string.IsNullOrWhiteSpace(file)) return null;
         try
         {
-            var path = Path.Combine(ImagesDir, file);
             if (!File.Exists(path)) return null;
             var uri = new Uri(path);
-
-            // Duże zdjęcia z aparatu zmniejszamy przy wczytywaniu (oszczędza pamięć), ale zostawiamy zapas na powiększanie.
             var natural = BitmapDecoder.Create(uri, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).Frames[0].PixelWidth;
 
             var bmp = new BitmapImage();
@@ -358,7 +362,7 @@ public static class SettingsStore
         }
         catch (Exception ex)
         {
-            Log.Write("Nie udało się wczytać obrazu " + file + ": " + ex.Message);
+            Log.Write("Nie udało się wczytać obrazu " + path + ": " + ex.Message);
             return null;
         }
     }

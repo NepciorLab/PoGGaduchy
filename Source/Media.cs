@@ -81,6 +81,48 @@ internal static class WebViewHost
 
     public static Stream? OpenResource(string name) =>
         Assembly.GetExecutingAssembly().GetManifestResourceStream(name);
+
+    // Strony wbudowane w program, serwowane pod "fałszywym" adresem https (bezpieczny kontekst, wymagany dla kamery).
+    static readonly Dictionary<string, string> Pages = new() { ["call.html"] = "Web.call.html", ["devices.html"] = "Web.devices.html" };
+
+    /// <summary>
+    /// Wspólna konfiguracja kontrolki WebView2: bez menu, narzędzi i zoomu; wbudowane strony zamiast sieci; zgoda na kamerę i
+    /// mikrofon raz na stałe tylko dla tych stron (żadnych pytań); blokada przechodzenia gdzie indziej.
+    /// </summary>
+    public static void Attach(CoreWebView2 core)
+    {
+        var s = core.Settings;
+        s.AreDefaultContextMenusEnabled = false;
+        s.AreDevToolsEnabled = Environment.GetEnvironmentVariable("PGG_DEVTOOLS") == "1";
+        s.IsZoomControlEnabled = false;
+        s.IsStatusBarEnabled = false;
+        s.IsSwipeNavigationEnabled = false;
+        s.IsPinchZoomEnabled = false;
+        s.AreBrowserAcceleratorKeysEnabled = false;
+        s.IsGeneralAutofillEnabled = false;
+        s.IsPasswordAutosaveEnabled = false;
+
+        core.AddWebResourceRequestedFilter(Origin + "/*", CoreWebView2WebResourceContext.All);
+        core.WebResourceRequested += (_, e) =>
+        {
+            var path = new Uri(e.Request.Uri).AbsolutePath.TrimStart('/');
+            var stream = Pages.TryGetValue(path, out var res) ? OpenResource(res) : null;
+            e.Response = stream == null
+                ? core.Environment.CreateWebResourceResponse(null, 404, "Not Found", "")
+                : core.Environment.CreateWebResourceResponse(stream, 200, "OK",
+                    "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nPermissions-Policy: camera=(self), microphone=(self)");
+        };
+        core.PermissionRequested += (_, e) =>
+        {
+            var ours = e.Uri.StartsWith(Origin + "/", StringComparison.Ordinal);
+            var media = e.PermissionKind is CoreWebView2PermissionKind.Camera or CoreWebView2PermissionKind.Microphone;
+            e.State = ours && media ? CoreWebView2PermissionState.Allow : CoreWebView2PermissionState.Deny;
+            e.SavesInProfile = true;
+        };
+        core.NavigationStarting += (_, e) => { if (!e.Uri.StartsWith(Origin + "/", StringComparison.Ordinal)) e.Cancel = true; };
+        core.NewWindowRequested += (_, e) => e.Handled = true;
+        core.ProcessFailed += (_, e) => Log.Write("WebView2: proces " + e.ProcessFailedKind + " zakończył się błędem (" + e.Reason + ")");
+    }
 }
 
 /// <summary>Dzwonek: dwa tony na przemian, w pętli. Generowany w pamięci (bez plików).</summary>

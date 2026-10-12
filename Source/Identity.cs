@@ -55,6 +55,13 @@ public sealed record Identity(string Server, string Key, string Id)
         return new Identity(server.TrimEnd('/'), key, id);
     }
 
+    /// <summary>Składa kod instalacji dla nowej osoby (administrator dodaje osobę w ustawieniach).</summary>
+    public static string CreateCode(string server, string key, string id)
+    {
+        var json = JsonSerializer.Serialize(new { s = server, k = key, i = id });
+        return Prefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(json)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
     public static void Save(string code)
     {
         Directory.CreateDirectory(SettingsStore.DataDir);

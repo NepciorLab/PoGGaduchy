@@ -35,6 +35,16 @@ internal static class Diagnostics
             using var resp = await http.SendAsync(req);
             var body = await resp.Content.ReadAsStringAsync();
             Log.Write($"DIAGNOZA: serwer odpowiedział {(int)resp.StatusCode}: {(resp.IsSuccessStatusCode ? Summarize(body) : "odmowa (zły kod instalacji?)")}");
+            if (AdminFile.Load() is { } adminKey)
+            {
+                using var req2 = new HttpRequestMessage(HttpMethod.Get, id.HttpUri("/api/status"));
+                req2.Headers.TryAddWithoutValidation("Authorization", "Bearer " + id.Key);
+                req2.Headers.TryAddWithoutValidation("X-Admin-Key", adminKey);
+                using var r2 = await http.SendAsync(req2);
+                var b2 = await r2.Content.ReadAsStringAsync();
+                Log.Write("DIAGNOZA: plik Admin.PMa jest; serwer: " + (b2.Contains("\"admin\":true") ? "potwierdza administratora" : "NIE potwierdza administratora"));
+            }
+            else Log.Write("DIAGNOZA: plik Admin.PMa: brak (zwykła kopia)");
         }
         catch (Exception ex) { Log.Write("DIAGNOZA: serwer: BRAK POŁĄCZENIA (" + ex.Message + ")"); }
     }

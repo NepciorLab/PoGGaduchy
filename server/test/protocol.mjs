@@ -43,7 +43,7 @@ r = await fetch(BASE + "/api/status", { headers: { Authorization: "Bearer " + "x
 check(r.status === 401, "zły klucz: 401");
 r = await fetch(BASE + "/api/status", { headers: { Authorization: "Bearer " + keys.ala } });
 const st = await r.json();
-check(r.status === 200 && st.id === "ala" && st.proto === 1, "dobry klucz: status z id osoby");
+check(r.status === 200 && st.id === "ala" && st.proto >= 1, "dobry klucz: status z id osoby");
 check((await fetch(BASE + "/cokolwiek")).status === 404, "nieznany adres: 404");
 let bad = false;
 try { const c = new Client("zly", "y".repeat(43)); await c.open(); } catch { bad = true; }

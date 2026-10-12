@@ -85,13 +85,20 @@ public partial class App : Application
         if (demo) FillDemo(settings);
 
         var identity = demo ? new Identity("http://127.0.0.1:1", new string('x', 43), "demo") : Identity.Load();
+        Services.Settings = settings;
+        Services.Identity = identity;
         if (!devRun && Environment.GetEnvironmentVariable("PGG_DATA") == null) Autostart.Apply(settings.Autostart);
 
         if (!devRun && identity != null)
         {
             _sig = new SignalingClient(Dispatcher);
-            Roster.Attach(settings, _sig);
+            var api = new ServerApi(identity);
+            Services.Api = api;
+            Roster.Attach(settings, _sig, api);
             _calls = new CallManager(settings, _sig);
+            Services.Sig = _sig; Services.Calls = _calls;
+            _calls.SettingsRequested += () => OpenSettings(null);
+            _calls.StateChanged += st => { if (st == CallState.Idle && Services.SettingsWindow is { } sw) sw.Topmost = false; };
             _sig.Start(identity);
             Log.Write($"Start programu {AppInfo.VersionText}, serwer {identity.Server}, dane: {SettingsStore.DataDir}");
         }
@@ -125,6 +132,28 @@ public partial class App : Application
     {
         try { _sig?.Stop(); } catch { }
         base.OnExit(e);
+    }
+
+    /// <summary>Otwiera ustawienia (jedne naraz). Z głównego okna: okno modalne; w czasie rozmowy: okno na wierzchu, żeby rozmowa trwała.</summary>
+    public void OpenSettings(Window? owner, string? group = null)
+    {
+        if (Services.SettingsWindow is { } open) { open.Activate(); if (group != null) open.ShowGroup(group); return; }
+        var w = new SettingsWindow();
+        Services.SettingsWindow = w;
+        w.Closed += (_, _) => { Services.SettingsWindow = null; SettingsStore.Save(Services.Settings); };
+        if (group != null) w.ShowGroup(group);
+        if (owner == null || _calls is { InCall: true })
+        {
+            w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            w.Topmost = true;
+            w.Show();
+            Native.ForceForeground(new WindowInteropHelper(w).Handle);
+        }
+        else
+        {
+            w.Owner = owner;
+            w.ShowDialog();
+        }
     }
 
     void ShowFirstInstance()
@@ -162,7 +191,13 @@ public partial class App : Application
             var list = (System.Windows.Controls.ListBox)window.FindName("ContactList");
             if (select && settings.Contacts.Count > 0) list.SelectedIndex = int.TryParse(args.SkipWhile(a => a != "--select").Skip(1).FirstOrDefault(), out var idx) ? idx : 1;
             Window target = window;
-            if (args.Contains("--settings")) { target = new SettingsWindow(settings, null, null) { Owner = window }; target.Show(); }
+            if (args.Contains("--settings"))
+            {
+                var sw = new SettingsWindow { Owner = window };
+                var grp = args.SkipWhile(x => x != "--group").Skip(1).FirstOrDefault();
+                if (grp != null) sw.ShowGroup(grp);
+                target = sw; target.Show();
+            }
             if (args.Contains("--incoming"))
             {
                 var inc = new IncomingCallWindow(settings.Contacts[1], true, !args.Contains("--nocamera")) { Topmost = false };
@@ -199,11 +234,9 @@ public partial class App : Application
         var names = new[] { "Babcia Ania", "Córka Kasia", "Syn Tomek z rodziną", "Wnuczek Jaś", "Doktor Nowak", "Sąsiadka Basia", "Brat Marek", "Siostra Ela" };
         for (var i = 0; i < names.Length; i++)
             s.Contacts.Add(new Person { Id = "osoba" + i, ServerName = names[i], Presence = i % 3 == 2 ? 0 : (i % 4 == 3 ? 2 : 1) });
-        if (File.Exists(Path.Combine(SettingsStore.ImagesDir, "demo.png")))
-        {
-            foreach (var c in s.Contacts.Take(2)) c.ImageFile = "demo.png";
-            s.Contacts[1].ImageZoom = 2.6; s.Contacts[1].ImageCenterX = 0.72; s.Contacts[1].ImageCenterY = 0.38;
-            s.Contacts[2].ImageFile = "demo.png"; s.Contacts[2].ImageZoom = 0.55; s.Contacts[2].ImageRotation = 90;
-        }
+        // Obrazy demonstracyjne: jeśli w images jest demo.png, dostają go dwie pierwsze osoby (jak obraz pobrany z serwera).
+        var demo = Path.Combine(SettingsStore.ImagesDir, "demo.png");
+        if (File.Exists(demo))
+            foreach (var c in s.Contacts.Take(2)) { File.Copy(demo, SettingsStore.AvatarPath(c.Id), true); c.AvatarVer = 1; }
     }
 }

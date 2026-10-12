@@ -20,6 +20,7 @@
   <ItemGroup>
     <Resource Include="Assets\app.ico" />
     <EmbeddedResource Include="Web\call.html" LogicalName="Web.call.html" />
+    <EmbeddedResource Include="Web\devices.html" LogicalName="Web.devices.html" />
   </ItemGroup>
 
   <ItemGroup>

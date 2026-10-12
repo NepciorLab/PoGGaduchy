@@ -3,8 +3,10 @@
 # jedna dzwoni do drugiej, druga odbiera, potem rozmowa jest kończona czerwoną słuchawką.
 #   powershell -ExecutionPolicy Bypass -Command "& .\tools\test-call.ps1 [-Scenario answer|reject|nocamera|cancel|autoanswer] [-ForceRelay]"
 param(
-    [ValidateSet('answer', 'reject', 'nocamera', 'cancel', 'autoanswer')][string]$Scenario = 'answer',
+    [ValidateSet('answer', 'reject', 'nocamera', 'cancel', 'autoanswer', 'settings')][string]$Scenario = 'answer',
     [switch]$ForceRelay,
+    [switch]$CalleeNoCamera,
+    [switch]$RealMedia,
     [string]$Exe = (Join-Path $PSScriptRoot '..\Source\bin\Debug\net8.0-windows10.0.19041.0\PoGGaduchy.exe'),
     [string]$Caller = 'ala', [string]$Callee = 'bartek',
     [string]$CallerName = 'Ala', [string]$CalleeName = 'Bartek'
@@ -21,7 +23,7 @@ function Start-Instance([string]$id, [bool]$noCamera, [string]$settingsJson = $n
     foreach ($f in 'settings.json', 'log.txt', 'log.txt.old') { Remove-Item (Join-Path $dir $f) -ErrorAction SilentlyContinue }
     if ($settingsJson) { [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), $settingsJson, (New-Object Text.UTF8Encoding($false))) }
     $env:PGG_DATA = $dir
-    $env:PGG_FAKE_MEDIA = '1'
+    $env:PGG_FAKE_MEDIA = $(if ($RealMedia) { '' } else { '1' })
     $env:PGG_NO_CAMERA = $(if ($noCamera) { '1' } else { '' })
     $env:PGG_FORCE_RELAY = $(if ($ForceRelay) { '1' } else { '' })
     $env:PGG_DEVTOOLS = ''
@@ -33,7 +35,7 @@ function Start-Instance([string]$id, [bool]$noCamera, [string]$settingsJson = $n
 
 $a = Start-Instance $Caller ($Scenario -eq 'nocamera')
 $trusted = if ($Scenario -eq 'autoanswer') { '{"Contacts":[{"Id":"' + $Caller + '","ServerName":"' + $CallerName + '","AutoAnswer":true}]}' } else { $null }
-$b = Start-Instance $Callee $false $trusted
+$b = Start-Instance $Callee ([bool]$CalleeNoCamera) $trusted
 try {
     # --- obie kopie łączą się z serwerem i widzą się nawzajem
     $okA = Find-InProcess $a.Proc.Id $CalleeName 25
@@ -98,6 +100,44 @@ try {
     if ($ForceRelay) { Check ($pathA -match 'lokalna: relay') 'wymuszony przekaźnik: wybrano ścieżkę przez TURN (relay)' }
     Start-Sleep -Seconds 5
     Save-Screen (Join-Path $shots "e2e-$Scenario-4-call.png")
+
+    if ($Scenario -eq 'settings') {
+        # ustawienia dostępne w trakcie rozmowy: przytrzymanie przycisku na stronie rozmowy otwiera okno ustawień na wierzchu
+        Set-WindowState $b.Proc.Id Minimized; Start-Sleep -Milliseconds 600; Bring-ToFront $a.Proc.Id
+        $callWin = Get-TopWindows $a.Proc.Id | Where-Object { $_.Current.Name -like '*rozmowa*' } | Select-Object -First 1
+        $gear = Find-ByName $callWin 'Ustawienia (przytrzymaj)' 10      # w oknie rozmowy (okno główne ma przycisk o tej samej nazwie)
+        Check ($null -ne $gear) 'w oknie rozmowy jest przycisk „Ustawienia (przytrzymaj)”'
+        if ($gear) {
+            $gr = $gear.Current.BoundingRectangle; $gx = [int]($gr.X + $gr.Width / 2); $gy = [int]($gr.Y + $gr.Height / 2)
+            $cr = $callWin.Current.BoundingRectangle
+            Write-Host ("      przycisk ustawień: x={0} y={1} w={2} h={3}; okno rozmowy: x={4} y={5} w={6} h={7}" -f [int]$gr.X, [int]$gr.Y, [int]$gr.Width, [int]$gr.Height, [int]$cr.X, [int]$cr.Y, [int]$cr.Width, [int]$cr.Height)
+            for ($k = 0; $k -lt 6; $k++) {
+                $root = Get-RootAt $gx $gy
+                if ($callWin -and $root.Handle -eq [IntPtr]$callWin.Current.NativeWindowHandle) { break }
+                Write-Host ("      pod przyciskiem jest okno [{0}] zamiast okna rozmowy – wysuwam okno rozmowy ({1})" -f $root.Title, ($k + 1))
+                Bring-ToFront $a.Proc.Id; Start-Sleep -Milliseconds 700
+            }
+            [void][PggNative]::SetCursorPos($gx, $gy); Start-Sleep -Milliseconds 200       # krótkie kliknięcie: tylko podpowiedź
+            [PggNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 150; [PggNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 500
+            Check ($null -eq (Find-InProcess $a.Proc.Id 'Gotowe' 1)) 'krótkie kliknięcie w rozmowie nie otwiera ustawień'
+            $done = $null
+            for ($try = 1; $try -le 3 -and -not $done; $try++) {
+                [PggNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 1500; [PggNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                $done = Find-InProcess $a.Proc.Id 'Gotowe' 5
+                if (-not $done) { Write-Host "      (przytrzymanie, próba $try – ustawienia się nie otworzyły)" }
+            }
+            Check ($null -ne $done) 'przytrzymanie 1 s w rozmowie otwiera ustawienia (okno na wierzchu)'
+            Start-Sleep -Seconds 1
+            [void](Invoke-Element (Find-InProcess $a.Proc.Id 'Audio i wideo' 5)); Start-Sleep -Seconds 3
+            Save-Screen (Join-Path $shots "e2e-$Scenario-5-settings-in-call.png")
+            Check ($null -ne (Find-InProcess $a.Proc.Id 'Trwa rozmowa: podgląd jest wyłączony, ale zmiany działają od razu.' 5)) 'w rozmowie podgląd kamery jest wyłączony (kamera jest zajęta przez rozmowę), zmiany urządzeń działają od razu'
+            if ($done) { [void](Invoke-Element $done) }
+            Start-Sleep -Seconds 1
+            Check ($null -ne (Find-InProcess $a.Proc.Id 'Rozłącz' 3)) 'po zamknięciu ustawień rozmowa trwa dalej'
+        }
+        Set-WindowState $b.Proc.Id Normal; Start-Sleep -Seconds 1
+    }
     $scr = [Windows.Forms.Screen]::PrimaryScreen.Bounds
     foreach ($i in $a, $b) {
         $cw = Get-TopWindows $i.Proc.Id | Where-Object { $_.Current.Name -like '*rozmowa*' } | Select-Object -First 1

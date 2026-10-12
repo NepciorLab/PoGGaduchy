@@ -1,0 +1,42 @@
+<UserControl x:Class="PoGGaduchy.PhotoEditor"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontSize="20">
+    <UserControl.Resources>
+        <Style x:Key="EdButton" TargetType="Button">
+            <Setter Property="Padding" Value="18,10"/>
+            <Setter Property="Margin" Value="0,0,10,10"/>
+            <Setter Property="FontSize" Value="20"/>
+            <Setter Property="MinHeight" Value="48"/>
+        </Style>
+    </UserControl.Resources>
+    <StackPanel Width="300">
+        <TextBlock Text="Zdjęcie – ustaw twarz w ramce" FontWeight="SemiBold" Margin="0,0,0,6"/>
+        <Border x:Name="PhotoFrame" Width="260" Height="260" CornerRadius="18" Background="#4C7FB0"
+                BorderBrush="#C5D3E0" BorderThickness="2" Cursor="SizeAll" HorizontalAlignment="Left"
+                MouseLeftButtonDown="OnPhotoDown" MouseMove="OnPhotoMove" MouseLeftButtonUp="OnPhotoUp"
+                MouseWheel="OnPhotoWheel" ToolTip="Przeciągnij myszą, aby przesunąć. Kółko myszy – powiększa.">
+            <Grid>
+                <Border CornerRadius="16" IsHitTestVisible="False">
+                    <Border.Background>
+                        <ImageBrush ImageSource="{Binding Image}" Viewbox="{Binding Crop}" Stretch="UniformToFill"/>
+                    </Border.Background>
+                </Border>
+                <TextBlock x:Name="InitialText" Foreground="White" FontWeight="Bold" FontSize="110"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Text="?"/>
+            </Grid>
+        </Border>
+        <TextBlock Text="Rozmiar zdjęcia w ramce (mniejszy ◂ ▸ większy)" TextWrapping="Wrap" Margin="0,10,0,0"/>
+        <Slider x:Name="ZoomSlider" Minimum="-2" Maximum="2.585" SmallChange="0.05" LargeChange="0.5"
+                Value="{Binding ZoomSlider}" Margin="0,4,0,4"/>
+        <TextBlock Text="Przeciągnij zdjęcie myszą, aby wycentrować twarz. Kółko myszy też zmienia rozmiar." TextWrapping="Wrap" FontSize="16" Foreground="#555" Margin="0,0,0,8"/>
+        <WrapPanel>
+            <Button Content="↺ Obróć w lewo" Style="{StaticResource EdButton}" Click="OnRotateLeft"/>
+            <Button Content="↻ Obróć w prawo" Style="{StaticResource EdButton}" Click="OnRotateRight"/>
+        </WrapPanel>
+        <WrapPanel>
+            <Button Content="Wybierz zdjęcie…" Style="{StaticResource EdButton}" Click="OnPick"/>
+            <Button Content="Wyśrodkuj" Style="{StaticResource EdButton}" Click="OnReset"/>
+        </WrapPanel>
+    </StackPanel>
+</UserControl>

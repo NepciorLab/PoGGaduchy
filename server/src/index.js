@@ -1,16 +1,25 @@
-// Serwer sygnalizacyjny PoGGaduchów (Cloudflare Workers + jeden Durable Object).
+// Serwer PoGGaduchów (Cloudflare Workers + jeden Durable Object).
 //
-// Serwer NIE widzi obrazu ani dźwięku (idą bezpośrednio między komputerami, WebRTC, szyfrowane).
+// Serwer NIE widzi obrazu ani dźwięku rozmów (idą bezpośrednio między komputerami, WebRTC, szyfrowane).
 // Przekazuje tylko: kto jest w sieci, "X dzwoni do Y", odebrał / odrzucił / rozłączył oraz dane negocjacji połączenia.
+// Przechowuje też katalog osób (nazwy) i ich małe obrazy (zdjęcia widoczne na kafelkach u wszystkich).
 //
-// Dostęp: każda instalacja ma długi, losowy klucz. Serwer zna tylko skróty SHA-256 dozwolonych kluczy
-// (sekret MEMBERS: [{"id":"mama","name":"Mama","hash":"<sha256 klucza, hex>"}]).
-// Klucz jest wysyłany w nagłówku "Authorization: Bearer <klucz>" (nigdy w adresie).
+// Dostęp: każda instalacja ma długi, losowy klucz; serwer zna tylko skróty SHA-256 kluczy (tabela members w bazie
+// Durable Object; pierwsze osoby można wczytać z sekretu MEMBERS: [{"id","name","hash"}]). Klucz idzie w nagłówku
+// "Authorization: Bearer <klucz>" (nigdy w adresie).
+// Administrator: osoba, która oprócz swojego klucza pokaże nagłówek "X-Admin-Key: <tajny tekst z pliku Admin.PMa>";
+// serwer zna tylko jego skrót (sekret ADMIN_HASH = SHA-256 tekstu, hex).
 //
 // HTTP:
-//   GET /              -> "PoGGaduchy: OK"                       (publiczne, bez danych)
-//   GET /api/status    -> {ok, proto, id, name, turn}            (wymaga klucza; ?turn=1 sprawdza też TURN)
-//   GET /ws            -> WebSocket (wymaga klucza)
+//   GET  /                          -> "PoGGaduchy: OK"                        (publiczne, bez danych)
+//   GET  /api/status                -> {ok, proto, id, name, admin, turn}      (klucz; ?turn=1 sprawdza też TURN)
+//   GET  /api/avatar/<id>           -> obraz JPEG osoby albo 404               (klucz)
+//   PUT  /api/avatar/<id>           -> zapis obrazu JPEG (≤ 250 KB)            (klucz: tylko swój obraz; admin: dowolny)
+//   DELETE /api/avatar/<id>         -> usunięcie obrazu                        (j.w.)
+//   POST /api/admin/people          -> {id,name,hash} dodaje osobę             (klucz + admin)
+//   PATCH /api/admin/people/<id>    -> {name?, hash?} zmiana nazwy / klucza    (klucz + admin)
+//   DELETE /api/admin/people/<id>   -> usuwa osobę (i jej obraz)               (klucz + admin)
+//   GET  /ws                        -> WebSocket                               (klucz)
 //
 // WebSocket, ramki tekstowe:
 //   "ping" -> "pong"   odpowiada platforma (auto-response), bez budzenia obiektu i bez zużywania limitu
@@ -24,7 +33,8 @@
 //   {t:"resume", cid, peer}           po ponownym połączeniu: wracam do trwającej rozmowy
 //   {t:"turn"}                        poproś o poświadczenia TURN
 // serwer -> klient
-//   {t:"welcome", proto, me, directory, online, serverTime}
+//   {t:"welcome", proto, me, directory:[{id,name,av}], online, serverTime}
+//   {t:"people", directory}           lista osób / obrazów się zmieniła (av: numer wersji obrazu, 0 = brak obrazu)
 //   {t:"presence", online:{id:1|2}}   1 = wolny, 2 = rozmawia
 //   {t:"ring", cid, from, video}      ktoś do Ciebie dzwoni
 //   {t:"ringing", cid}                dzwonek u drugiej osoby
@@ -37,14 +47,18 @@
 //   {t:"kicked"}                      zalogowano się z innego miejsca tym samym kluczem
 import { DurableObject } from "cloudflare:workers";
 
-const PROTO = 1;
+const PROTO = 2;
 const MAX_FRAME = 16000;            // SDP ma kilka kilobajtów; limit chroni przed śmieciami
+const MAX_AVATAR = 250 * 1024;      // obraz osoby: kwadratowy JPEG ok. 512 px, zwykle 30-80 KB
+const MAX_MEMBERS = 30;
+const MEMBER_CACHE_MS = 30_000;     // Worker pamięta listę osób tyle czasu (zmiany admina widać po tym czasie we wszystkich lokalizacjach)
 const STALE_MS = 100_000;           // klient pinguje co ~25 s; brak życia przez 100 s = zerwane połączenie
 const SWEEP_MS = 60_000;            // jak często obiekt sprząta zerwane połączenia (alarm)
 const RESUME_MS = 90_000;           // tyle czekamy na powrót strony, która straciła połączenie w trakcie rozmowy
 const RATE_WINDOW_MS = 10_000, RATE_MAX = 120;   // ruch ICE przychodzi seriami; to i tak daleko od nadużyć
 const END_REASONS = new Set(["rejected", "hangup", "cancel", "timeout", "error"]);
-const FALLBACK_ICE = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
+const FALLBACK_ICE = [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }];
+const ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 // ---------------------------------------------------------------- pomocnicze
 async function sha256Hex(text) {
@@ -59,18 +73,13 @@ function safeEqual(a, b) {
   return r === 0;
 }
 
-let membersCache = { raw: null, list: [] };
-function members(env) {
-  const raw = env.MEMBERS || "[]";
-  if (membersCache.raw !== raw) {
-    let list = [];
-    try {
-      list = JSON.parse(raw).filter((m) => m && /^[a-z0-9_-]{1,32}$/.test(m.id) && /^[0-9a-f]{64}$/.test(m.hash))
-        .map((m) => ({ id: m.id, name: String(m.name || m.id).slice(0, 60), hash: m.hash }));
-    } catch { /* błędny sekret: nikt się nie zaloguje */ }
-    membersCache = { raw, list };
-  }
-  return membersCache.list;
+const hub = (env) => env.HUB.get(env.HUB.idFromName("main"));
+
+let memberCache = { at: 0, list: [] };
+async function members(env, force = false) {
+  if (!force && Date.now() - memberCache.at < MEMBER_CACHE_MS) return memberCache.list;
+  memberCache = { at: Date.now(), list: await hub(env).listMembers() };
+  return memberCache.list;
 }
 
 async function authenticate(request, env) {
@@ -78,8 +87,15 @@ async function authenticate(request, env) {
   if (!m) return null;
   const hash = await sha256Hex(m[1]);
   let found = null;
-  for (const mem of members(env)) if (safeEqual(mem.hash, hash)) found = mem;   // bez wcześniejszego wyjścia
+  for (const mem of await members(env)) if (safeEqual(mem.hash, hash)) found = mem;   // bez wcześniejszego wyjścia
   return found;
+}
+
+// Administrator: nagłówek X-Admin-Key musi mieć skrót zgodny z sekretem ADMIN_HASH.
+async function isAdmin(request, env) {
+  const key = (request.headers.get("X-Admin-Key") || "").trim();
+  if (!key || key.length > 256 || !env.ADMIN_HASH) return false;
+  return safeEqual((await sha256Hex(key)).toLowerCase(), String(env.ADMIN_HASH).trim().toLowerCase());
 }
 
 async function iceServers(env) {
@@ -104,52 +120,207 @@ async function iceServers(env) {
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+const text = (msg, status) => new Response(msg, { status, headers: { "cache-control": "no-store" } });
 
 // ---------------------------------------------------------------- Worker
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/" && request.method === "GET")
-      return new Response("PoGGaduchy: OK\n", { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+    if (url.pathname === "/" && request.method === "GET") return text("PoGGaduchy: OK\n", 200);
 
-    if (url.pathname !== "/ws" && url.pathname !== "/api/status") return new Response("Not found", { status: 404 });
+    const isApi = url.pathname === "/api/status" || url.pathname.startsWith("/api/avatar/") || url.pathname.startsWith("/api/admin/");
+    if (url.pathname !== "/ws" && !isApi) return text("Not found", 404);
 
-    const me = await authenticate(request, env);
-    if (!me) {
-      // Zła próba: liczymy ją i po przekroczeniu limitu odpowiadamy 429 (bez ujawniania, czy klucz był bliski).
-      const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+    // Zła próba (zły klucz osoby lub zły klucz administratora): liczymy ją i po przekroczeniu limitu odpowiadamy 429.
+    const failed = async (status, msg) => {
       if (env.AUTH_FAIL_LIMITER) {
         const { success } = await env.AUTH_FAIL_LIMITER.limit({ key: ip });
-        if (!success) return new Response("Too many attempts", { status: 429, headers: { "retry-after": "60" } });
+        if (!success) return text("Too many attempts", 429);
       }
-      return new Response("Unauthorized", { status: 401 });
-    }
+      return text(msg, status);
+    };
+
+    const me = await authenticate(request, env);
+    if (!me) return failed(401, "Unauthorized");
+    const admin = request.headers.has("X-Admin-Key") ? await isAdmin(request, env) : false;
+    if (request.headers.has("X-Admin-Key") && !admin && url.pathname !== "/api/status") return failed(403, "Forbidden");
 
     if (url.pathname === "/api/status") {
-      const out = { ok: true, proto: PROTO, id: me.id, name: me.name, turn: !!(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) };
+      const out = { ok: true, proto: PROTO, id: me.id, name: me.name, admin, turn: !!(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) };
       if (url.searchParams.get("turn") === "1") { const t = await iceServers(env); out.turnWorks = t.relay; if (t.error) out.turnError = t.error; }
       return json(out);
     }
 
-    if (request.headers.get("Upgrade") !== "websocket") return new Response("WebSocket expected", { status: 426 });
+    if (url.pathname.startsWith("/api/avatar/")) return avatarApi(request, env, url, me, admin);
+    if (url.pathname.startsWith("/api/admin/")) return adminApi(request, env, url, me, admin);
+
+    if (request.headers.get("Upgrade") !== "websocket") return text("WebSocket expected", 426);
     const headers = new Headers(request.headers);
     headers.delete("Authorization");
+    headers.delete("X-Admin-Key");
     headers.set("X-Member-Id", me.id);
-    return env.HUB.get(env.HUB.idFromName("main")).fetch(new Request(request, { headers }));
+    return hub(env).fetch(new Request(request, { headers }));
   },
 };
+
+async function avatarApi(request, env, url, me, admin) {
+  const id = decodeURIComponent(url.pathname.slice("/api/avatar/".length));
+  if (!ID_RE.test(id)) return text("Bad id", 400);
+  const h = hub(env);
+  if (request.method === "GET") {
+    const a = await h.getAvatar(id);
+    if (!a) return text("No avatar", 404);
+    return new Response(a.bytes, { headers: { "content-type": "image/jpeg", "cache-control": "no-store", "x-avatar-version": String(a.av) } });
+  }
+  if (request.method !== "PUT" && request.method !== "DELETE") return text("Method not allowed", 405);
+  if (id !== me.id && !admin) return text("Forbidden", 403);               // każdy zmienia tylko swój obraz
+  if (request.method === "DELETE") {
+    const r = await h.clearAvatar(id);
+    return r ? json({ ok: true }) : text("Not found", 404);
+  }
+  const len = parseInt(request.headers.get("content-length") || "0", 10);
+  if (len > MAX_AVATAR) return text("Too large", 413);
+  const buf = await request.arrayBuffer();
+  if (buf.byteLength < 100 || buf.byteLength > MAX_AVATAR) return text("Bad size", 413);
+  const b = new Uint8Array(buf);
+  if (!(b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff)) return text("JPEG expected", 415);
+  const av = await h.setAvatar(id, buf);
+  if (av === null) return text("Not found", 404);
+  return json({ ok: true, av });
+}
+
+async function adminApi(request, env, url, me, admin) {
+  if (!admin) return text("Forbidden", 403);
+  const h = hub(env);
+  const rest = decodeURIComponent(url.pathname.slice("/api/admin/people".length)).replace(/^\//, "");
+  if (!url.pathname.startsWith("/api/admin/people")) return text("Not found", 404);
+  let body = {};
+  if (request.method === "POST" || request.method === "PATCH") {
+    if (parseInt(request.headers.get("content-length") || "0", 10) > 4096) return text("Too large", 413);
+    try { body = await request.json(); } catch { return text("Bad JSON", 400); }
+  }
+  const okName = (n) => typeof n === "string" && n.trim().length >= 1 && n.trim().length <= 60;
+  const okHash = (x) => typeof x === "string" && /^[0-9a-f]{64}$/.test(x);
+  let r;
+  if (request.method === "POST" && rest === "") {
+    if (!ID_RE.test(body.id || "") || !okName(body.name) || !okHash(body.hash)) return text("Bad data", 400);
+    r = await h.addMember(body.id, body.name.trim(), body.hash);
+  } else if (request.method === "PATCH" && ID_RE.test(rest)) {
+    if (body.name !== undefined && !okName(body.name)) return text("Bad name", 400);
+    if (body.hash !== undefined && !okHash(body.hash)) return text("Bad hash", 400);
+    r = await h.updateMember(rest, body.name === undefined ? null : body.name.trim(), body.hash ?? null);
+  } else if (request.method === "DELETE" && ID_RE.test(rest)) {
+    if (rest === me.id) return text("Cannot remove yourself", 409);
+    r = await h.removeMember(rest);
+  } else return text("Not found", 404);
+  memberCache.at = 0;                                                       // ta lokalizacja od razu zna zmianę
+  if (r === "exists") return text("Exists", 409);
+  if (r === "full") return text("Too many people", 409);
+  if (r === "none") return text("Not found", 404);
+  return json({ ok: true });
+}
 
 // ---------------------------------------------------------------- Durable Object
 export class Hub extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS members(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL, avatar BLOB, av INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL)`);
+    this.sql.exec("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)");
+    this.seed();
     // Podtrzymywanie połączenia: "ping" -> "pong" bez budzenia obiektu (nie liczy się do limitów).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
+  // Pierwsze uruchomienie: osoby z sekretu MEMBERS trafiają do bazy (potem baza jest jedynym źródłem; MEMBERS jest ignorowany).
+  seed() {
+    const done = this.sql.exec("SELECT v FROM meta WHERE k = 'seeded'").toArray()[0];
+    if (done) return;
+    try {
+      for (const m of JSON.parse(this.env.MEMBERS || "[]")) {
+        if (m && ID_RE.test(m.id) && /^[0-9a-f]{64}$/.test(m.hash))
+          this.sql.exec("INSERT OR IGNORE INTO members(id, name, hash, created) VALUES(?, ?, ?, ?)", m.id, String(m.name || m.id).slice(0, 60), m.hash, Date.now());
+      }
+    } catch { /* błędny sekret: zaczynamy z pustą listą */ }
+    this.sql.exec("INSERT OR REPLACE INTO meta(k, v) VALUES('seeded', '1')");
+  }
+
+  // ---------------------------------------------------------------- osoby i obrazy (wołane z Workera przez RPC)
+  listMembers() {
+    return this.sql.exec("SELECT id, name, hash, CASE WHEN avatar IS NULL THEN 0 ELSE av END AS av FROM members ORDER BY rowid").toArray();
+  }
+
+  directory() { return this.listMembers().map((m) => ({ id: m.id, name: m.name, av: m.av })); }
+
+  broadcastPeople() {
+    const msg = { t: "people", directory: this.directory() };
+    for (const ws of this.ctx.getWebSockets()) this.send(ws, msg);
+  }
+
+  addMember(id, name, hash) {
+    if (this.sql.exec("SELECT 1 FROM members WHERE id = ?", id).toArray().length) return "exists";
+    if (this.sql.exec("SELECT COUNT(*) AS n FROM members").toArray()[0].n >= MAX_MEMBERS) return "full";
+    this.sql.exec("INSERT INTO members(id, name, hash, created) VALUES(?, ?, ?, ?)", id, name, hash, Date.now());
+    this.broadcastPeople();
+    return "ok";
+  }
+
+  updateMember(id, name, hash) {
+    if (!this.sql.exec("SELECT 1 FROM members WHERE id = ?", id).toArray().length) return "none";
+    if (name !== null) this.sql.exec("UPDATE members SET name = ? WHERE id = ?", name, id);
+    if (hash !== null) {
+      this.sql.exec("UPDATE members SET hash = ? WHERE id = ?", hash, id);
+      this.dropSockets(id, "new key");                                       // stary klucz przestaje działać od razu
+    }
+    this.broadcastPeople();
+    return "ok";
+  }
+
+  removeMember(id) {
+    if (!this.sql.exec("SELECT 1 FROM members WHERE id = ?", id).toArray().length) return "none";
+    this.sql.exec("DELETE FROM members WHERE id = ?", id);
+    this.dropSockets(id, "removed");
+    this.broadcastPeople();
+    this.broadcastPresence();
+    return "ok";
+  }
+
+  dropSockets(id, why) {
+    for (const ws of this.ctx.getWebSockets(id)) {
+      this.send(ws, { t: "kicked", reason: why });
+      try { ws.close(4003, why); } catch { /* */ }
+      this.dropSocket(ws, false);
+    }
+  }
+
+  getAvatar(id) {
+    const r = this.sql.exec("SELECT avatar, av FROM members WHERE id = ?", id).toArray()[0];
+    return r && r.avatar ? { bytes: r.avatar, av: r.av } : null;
+  }
+
+  setAvatar(id, bytes) {
+    const r = this.sql.exec("SELECT av FROM members WHERE id = ?", id).toArray()[0];
+    if (!r) return null;
+    const av = r.av + 1;
+    this.sql.exec("UPDATE members SET avatar = ?, av = ? WHERE id = ?", bytes, av, id);
+    this.broadcastPeople();
+    return av;
+  }
+
+  clearAvatar(id) {
+    const r = this.sql.exec("SELECT av FROM members WHERE id = ?", id).toArray()[0];
+    if (!r) return false;
+    this.sql.exec("UPDATE members SET avatar = NULL, av = ? WHERE id = ?", r.av + 1, id);
+    this.broadcastPeople();
+    return true;
+  }
+
+  // ---------------------------------------------------------------- WebSocket
   async fetch(request) {
     const id = request.headers.get("X-Member-Id");
-    const mem = members(this.env).find((m) => m.id === id);
+    const mem = this.listMembers().find((m) => m.id === id);
     if (!mem) return new Response("Unauthorized", { status: 401 });
 
     const pair = new WebSocketPair();
@@ -166,7 +337,7 @@ export class Hub extends DurableObject {
       this.dropSocket(old, false);
     }
     this.send(server, { t: "welcome", proto: PROTO, me: { id: mem.id, name: mem.name },
-      directory: members(this.env).map((m) => ({ id: m.id, name: m.name })), online: this.online(), serverTime: now });
+      directory: this.directory(), online: this.online(), serverTime: now });
     this.broadcastPresence();
     await this.ensureAlarm();
     return new Response(null, { status: 101, webSocket: client });
@@ -305,7 +476,8 @@ export class Hub extends DurableObject {
     const cid = String(m.cid || "").slice(0, 64), to = String(m.to || "");
     if (!/^[A-Za-z0-9_-]{8,64}$/.test(cid)) return;
     if (a.cid) return this.send(ws, { t: "end", cid, reason: "busy" });          // sam już rozmawiam
-    const target = to !== a.id && members(this.env).some((x) => x.id === to) ? this.sockOf(to) : null;
+    const known = to !== a.id && this.sql.exec("SELECT 1 FROM members WHERE id = ?", to).toArray().length > 0;
+    const target = known ? this.sockOf(to) : null;
     if (!target) return this.send(ws, { t: "end", cid, reason: "offline" });
     const ta = this.att(target);
     if (ta.cid) return this.send(ws, { t: "end", cid, reason: "busy" });

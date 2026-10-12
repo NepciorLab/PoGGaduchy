@@ -61,6 +61,14 @@ public sealed class CallManager : Observable
 
     public event Action<CallState>? StateChanged;
 
+    /// <summary>Użytkownik przytrzymał przycisk ustawień w oknie rozmowy.</summary>
+    public event Action? SettingsRequested;
+
+    object DevicePrefs() => new { mic = _settings.MicLabel, speaker = _settings.SpeakerLabel, camera = _settings.CameraLabel };
+
+    /// <summary>Po zmianie urządzeń w ustawieniach: trwająca rozmowa przełącza się na nie od razu.</summary>
+    public void ApplyDevices() => _win?.Post(new { type = "devices", devices = DevicePrefs() });
+
     /// <summary>Krótki komunikat dla użytkownika (np. "Kasia nie odbiera"), wyświetlany w głównym oknie.</summary>
     public event Action<string>? Notice;
 
@@ -278,7 +286,7 @@ public sealed class CallManager : Observable
         win.Post(new
         {
             type = "init", role = _role, video = wantVideo, peerName = peer.Name, peerPhoto = PhotoRenderer.ToDataUrl(peer),
-            ice, opts = new { forceRelay = WebViewHost.ForceRelay },
+            ice, opts = new { forceRelay = WebViewHost.ForceRelay }, devices = DevicePrefs(),
             status = _role == "caller" ? (State == CallState.Dialing ? $"Dzwonię do: {peer.Name}…" : "Łączę…") : "Łączę…",
         });
     }
@@ -313,8 +321,10 @@ public sealed class CallManager : Observable
                 break;
             case "state": OnPageState(m.GetProperty("state").GetString() ?? "", m.TryGetProperty("ice", out var ic) ? ic.GetString() ?? "" : ""); break;
             case "hangup": UserHangup(); break;
+            case "settings": SettingsRequested?.Invoke(); break;
+            case "stats": Log.Write($"Rozmowa {_cid}: [statystyki] " + m.GetProperty("text").GetString()); break;
             case "media":
-                Log.Write($"Rozmowa {_cid}: lokalne media – kamera: {m.GetProperty("video")}, mikrofon: {m.GetProperty("audio")}");
+                Log.Write($"Rozmowa {_cid}: lokalne media – kamera: {m.GetProperty("video")}, mikrofon: {m.GetProperty("audio")}" + (m.TryGetProperty("videoError", out var ve) && ve.GetString() is { Length: > 0 } vs ? " (błąd kamery: " + vs + ")" : ""));
                 break;
             case "path":
                 Log.Write($"Rozmowa {_cid}: wybrana ścieżka połączenia – lokalna: {m.GetProperty("local")}, zdalna: {m.GetProperty("remote")}, protokół: {m.GetProperty("protocol")}");

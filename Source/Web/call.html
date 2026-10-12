@@ -16,7 +16,7 @@
             display: flex; align-items: center; justify-content: center; font-size: 22vh; font-weight: 700; }
   #peerName { font-size: 7vh; font-weight: 700; text-align: center; max-width: 90vw; line-height: 1.15; }
   #status { position: absolute; left: 0; right: 0; top: 3vh; text-align: center; font-size: 5vh; font-weight: 600; color: var(--gold);
-            text-shadow: 0 0.3vh 1.2vh rgba(0,0,0,.8); padding: 0 4vw; pointer-events: none; }
+            text-shadow: 0 0.3vh 1.2vh rgba(0,0,0,.8); padding: 0 16vw; pointer-events: none; }
   #chip { position: absolute; left: 2vw; top: 2vh; background: rgba(11, 27, 43, .72); border-radius: 2vh; padding: 0.8vh 2vh; font-size: 4vh; font-weight: 600;
           display: none; max-width: 60vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #local { position: absolute; left: 2vw; bottom: 3vh; width: 26vw; max-width: 46vh; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 2vh;
@@ -28,7 +28,15 @@
   #hangup:active { opacity: .85; }
   #hangup svg { width: 78%; height: 78%; }
   #notice { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(11, 27, 43, .92); border: 0.6vh solid var(--gold);
-            border-radius: 4vh; padding: 4vh 5vw; font-size: 5vh; text-align: center; max-width: 80vw; display: none; line-height: 1.25; }
+            border-radius: 4vh; padding: 4vh 5vw; font-size: 5vh; text-align: center; max-width: 80vw; display: none; line-height: 1.25; z-index: 5; }
+  /* Ustawienia dostępne w czasie rozmowy: trzeba przytrzymać 1 s; krótkie kliknięcie pokazuje podpowiedź na 3 s */
+  #gear { position: absolute; right: 1.5vw; top: 2vh; display: flex; align-items: center; gap: 1vh; background: rgba(255,255,255,.22); border: 0; color: #fff;
+          border-radius: 3vh; padding: 0.9vh 2.2vh; font: 600 max(14px, 2.4vh) "Segoe UI", sans-serif; cursor: pointer; overflow: hidden; z-index: 4; }
+  #gear .ic { font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; font-size: max(18px, 3vh); }
+  #gear .bar { position: absolute; left: 0; bottom: 0; height: 0.6vh; width: 0; background: var(--gold); }
+  #gear.hold .bar { width: 100%; transition: width 1s linear; }
+  #gearHint { position: absolute; right: 1.5vw; top: 8vh; max-width: 330px; text-align: right; font-size: 12px; font-weight: 600; color: #FFD27A;
+              text-shadow: 0 0 4px #000; display: none; z-index: 4; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -38,6 +46,8 @@
 <video id="local" autoplay playsinline muted></video>
 <div id="status"></div>
 <div id="notice"></div>
+<button id="gear" aria-label="Ustawienia (przytrzymaj)"><span class="ic">&#xE713;</span><span>Ustawienia</span><span class="bar"></span></button>
+<div id="gearHint">Aby otworzyć ustawienia, przytrzymaj ten przycisk przez 1 sekundę.</div>
 <button id="hangup" aria-label="Rozłącz" title="Rozłącz"><svg viewBox="0 3 24 18" aria-hidden="true"><path fill="#fff" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.71.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg></button>
 
 <script>
@@ -47,50 +57,140 @@ const $ = (id) => document.getElementById(id);
 const post = (o) => { try { host.postMessage(o); } catch (e) { /* poza programem */ } };
 const log = (m) => post({ type: "log", msg: String(m) });
 
-let pc = null, localStream = null, role = "caller", opts = {}, remoteStream = new MediaStream();
+let pc = null, localStream = null, role = "caller", opts = {}, remoteStream = new MediaStream(), dv = {};
 let pendingIce = [], haveRemote = false, started = false, connectedOnce = false;
-let restartTimer = null, restartTries = 0, disconnectTimer = null, hasLocalVideo = false;
+let restartTimer = null, restartTries = 0, disconnectTimer = null, hasLocalVideo = false, devList = [], noticeTimer = null, statsCount = 0;
 
 $("hangup").addEventListener("click", () => post({ type: "hangup" }));
 window.addEventListener("contextmenu", (e) => e.preventDefault());
 
 function setStatus(text) { $("status").textContent = text || ""; }
-function setNotice(text) { const n = $("notice"); n.textContent = text || ""; n.style.display = text ? "block" : "none"; }
+function setNotice(text, ms) {
+  const n = $("notice");
+  clearTimeout(noticeTimer);
+  n.textContent = text || ""; n.style.display = text ? "block" : "none";
+  if (text && ms) noticeTimer = setTimeout(() => setNotice(""), ms);
+}
 
+// ---------------------------------------------------------------- ustawienia: przytrzymanie 1 s
+(function () {
+  const g = $("gear"); let t = null, t0 = 0, hintTimer = null;
+  const end = () => {
+    if (t === null) return;
+    clearTimeout(t); t = null; g.classList.remove("hold");
+    if (Date.now() - t0 < 900) {                              // krótkie kliknięcie: podpowiedź na 3 s
+      $("gearHint").style.display = "block";
+      clearTimeout(hintTimer); hintTimer = setTimeout(() => { $("gearHint").style.display = "none"; }, 3000);
+    }
+  };
+  g.addEventListener("pointerdown", () => {
+    $("gearHint").style.display = "none";
+    t0 = Date.now(); g.classList.add("hold");
+    t = setTimeout(() => { t = null; g.classList.remove("hold"); post({ type: "settings" }); }, 1000);
+  });
+  g.addEventListener("pointerup", end); g.addEventListener("pointerleave", end); g.addEventListener("pointercancel", end);
+})();
+
+// ---------------------------------------------------------------- urządzenia (wybór po nazwie, jak w Windows)
+const norm = (l) => (l || "").replace(/^(default|communications|domyślne|domyślny|komunikacja)\s*-\s*/i, "").replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "").trim();
+
+async function listDevs() {
+  try { devList = await navigator.mediaDevices.enumerateDevices(); } catch (e) { devList = []; }
+}
+
+function findId(kind, label) {
+  if (!label) return "";
+  const want = norm(label).toLowerCase();
+  const c = devList.filter((d) => d.kind === kind && d.deviceId !== "default" && d.deviceId !== "communications");
+  const hit = c.find((d) => norm(d.label).toLowerCase() === want) || c.find((d) => norm(d.label).toLowerCase().includes(want));
+  return hit ? hit.deviceId : "";
+}
+
+async function gum(kind, label, extra) {
+  const id = findId(kind === "audio" ? "audioinput" : "videoinput", label);
+  const base = kind === "audio" ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : (extra || {});
+  if (id) {
+    try { return await navigator.mediaDevices.getUserMedia({ [kind]: { ...base, deviceId: { exact: id } } }); }
+    catch (e) { log("wybrane urządzenie (" + kind + ", " + label + ") niedostępne: " + e.name + "; używam domyślnego"); }
+  }
+  return navigator.mediaDevices.getUserMedia({ [kind]: base });
+}
+
+async function getMedia(wantVideo) {
+  await listDevs();
+  if ((dv.mic || dv.camera || dv.speaker) && devList.some((d) => !d.label)) {     // etykiety pojawiają się po pierwszym użyciu urządzeń
+    try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); } catch (e) { /* */ }
+    await listDevs();
+  }
+  let audio = null, video = null, videoErr = "";
+  try { audio = await gum("audio", dv.mic); } catch (e) { log("mikrofon: " + e.name + " " + e.message); }
+  if (wantVideo) {
+    try { video = await gum("video", dv.camera, { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }); }
+    catch (e) { videoErr = e.name; log("kamera: " + e.name + " " + e.message); }
+  }
+  const s = new MediaStream();
+  if (audio) audio.getAudioTracks().forEach((t) => s.addTrack(t));
+  if (video) video.getVideoTracks().forEach((t) => s.addTrack(t));
+  s.videoError = videoErr;
+  return s;
+}
+
+function applySink() {
+  const id = findId("audiooutput", dv.speaker);
+  const r = $("remote");
+  if (id && r.setSinkId) r.setSinkId(id).catch((e) => log("głośniki: " + e));
+}
+
+// Zmiana urządzeń w trakcie rozmowy (z ustawień): podmieniamy ścieżki bez zrywania połączenia.
+async function applyDevices(m) {
+  dv = m.devices || {};
+  await listDevs();
+  applySink();
+  if (!pc || !localStream) return;
+  for (const [kind, label, key] of [["audio", dv.mic, "mic"], ["video", dv.camera, "camera"]]) {
+    const sender = pc.getSenders().find((s) => s.track && s.track.kind === kind);
+    if (!sender) { if (kind === "video") log("zmiana kamery pominięta: ta rozmowa nie wysyła obrazu"); continue; }
+    try {
+      const ns = await gum(kind, label, { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } });
+      const nt = ns.getTracks()[0];
+      const old = sender.track;
+      await sender.replaceTrack(nt);
+      localStream.removeTrack(old); old.stop(); localStream.addTrack(nt);
+      if (kind === "video") $("local").srcObject = localStream;
+      log("zmieniono urządzenie (" + key + "): " + (nt.label || label));
+    } catch (e) { log("zmiana urządzenia (" + key + ") nie powiodła się: " + e.name + " " + e.message); }
+  }
+}
+
+// ---------------------------------------------------------------- wideo: pokazujemy, gdy naprawdę idzie obraz
 function showRemoteVideo(on) {
   $("remote").style.display = on ? "block" : "none";
   $("avatarView").style.display = on ? "none" : "flex";
   $("chip").style.display = on ? "block" : "none";
 }
 
-// ---------------------------------------------------------------- multimedia
-async function getMedia(wantVideo) {
-  let audio = null, video = null;
-  try {
-    audio = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-  } catch (e) { log("mikrofon: " + e.name + " " + e.message); }
-  if (wantVideo) {
-    try {
-      video = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
-    } catch (e) { log("kamera: " + e.name + " " + e.message); }
-  }
-  const s = new MediaStream();
-  if (audio) audio.getAudioTracks().forEach((t) => s.addTrack(t));
-  if (video) video.getVideoTracks().forEach((t) => s.addTrack(t));
-  return s;
+function refreshVideo() {
+  const r = $("remote"), t = remoteStream.getVideoTracks()[0];
+  showRemoteVideo(!!t && t.readyState === "live" && (!t.muted || r.videoWidth > 0));
+  const l = $("local"), lt = localStream && localStream.getVideoTracks()[0];
+  const lv = !!lt && lt.readyState === "live";
+  l.style.display = lv ? "block" : "none";
+  if (lv && l.paused) l.play().catch(() => {});
+  if (r.paused && r.srcObject) r.play().catch(() => {});
 }
+setInterval(refreshVideo, 700);
+["playing", "loadeddata", "resize"].forEach((ev) => $("remote").addEventListener(ev, refreshVideo));
 
 function createPeer(ice) {
   pc = new RTCPeerConnection({ iceServers: ice || [], iceTransportPolicy: opts.forceRelay ? "relay" : "all", bundlePolicy: "max-bundle" });
   pc.onicecandidate = (e) => post({ type: "sig", data: { ice: e.candidate ? e.candidate.toJSON() : null } });
   pc.ontrack = (e) => {
     if (!remoteStream.getTracks().includes(e.track)) remoteStream.addTrack(e.track);
-    $("remote").srcObject = remoteStream;
-    if (e.track.kind === "video") {
-      const upd = () => showRemoteVideo(!e.track.muted && e.track.readyState === "live");
-      e.track.onunmute = upd; e.track.onmute = upd; e.track.onended = upd; upd();
-    }
-    $("remote").play().catch(() => {});
+    if ($("remote").srcObject !== remoteStream) $("remote").srcObject = remoteStream;
+    if (e.track.kind === "video") { e.track.onunmute = refreshVideo; e.track.onmute = refreshVideo; e.track.onended = refreshVideo; }
+    applySink();
+    $("remote").play().catch((err) => { if (err.name !== "AbortError") log("odtwarzanie obrazu: " + err); });
+    refreshVideo();
   };
   pc.oniceconnectionstatechange = onConnState;
   pc.onconnectionstatechange = onConnState;
@@ -105,8 +205,8 @@ function onConnState() {
   post({ type: "state", state: s, ice: i });
   if (s === "connected" || i === "connected" || i === "completed") {
     clearTimeout(disconnectTimer); clearTimeout(restartTimer); restartTries = 0;
-    setStatus(""); setNotice("");
-    if (!connectedOnce) { connectedOnce = true; reportPath(); }
+    setStatus("");
+    if (!connectedOnce) { connectedOnce = true; reportPath(); statsLoop(); }
   } else if (s === "disconnected" || i === "disconnected") {
     setStatus("Łączę ponownie…");
     clearTimeout(disconnectTimer);
@@ -141,6 +241,27 @@ async function reportPath() {
   } catch (e) { log("stats: " + e); }
 }
 
+// Statystyki do logu (diagnoza "nie widać obrazu"): co 5 s przez pierwsze pół minuty.
+async function statsLoop() {
+  if (!pc || statsCount >= 6) return;
+  statsCount++;
+  await new Promise((r) => setTimeout(r, 5000));
+  try {
+    const st = await pc.getStats(), o = {};
+    st.forEach((r) => {
+      if (r.type === "inbound-rtp") o["in_" + r.kind] = `pakiety ${r.packetsReceived}, bajty ${r.bytesReceived}` + (r.kind === "video" ? `, zdekodowane klatki ${r.framesDecoded ?? "?"}, ${r.frameWidth || 0}x${r.frameHeight || 0}, utracone pakiety ${r.packetsLost}` : "");
+      if (r.type === "outbound-rtp") o["out_" + r.kind] = `pakiety ${r.packetsSent}, bajty ${r.bytesSent}` + (r.kind === "video" ? `, wysłane klatki ${r.framesSent ?? "?"}, ${r.frameWidth || 0}x${r.frameHeight || 0}` : "");
+    });
+    const r = $("remote"), l = $("local");
+    const lt = localStream && localStream.getVideoTracks()[0], rt = remoteStream.getVideoTracks()[0];
+    post({ type: "stats", text:
+      `odbiór wideo: ${o.in_video || "brak"} | odbiór audio: ${o.in_audio || "brak"} | wysyłka wideo: ${o.out_video || "brak"} | wysyłka audio: ${o.out_audio || "brak"} | ` +
+      `okno obrazu zdalnego: ${r.videoWidth}x${r.videoHeight}, wstrzymany=${r.paused}, ścieżka=${rt ? rt.readyState + (rt.muted ? "/wyciszona" : "") : "brak"} | ` +
+      `podgląd własny: ${l.videoWidth}x${l.videoHeight}, ścieżka=${lt ? lt.readyState + (lt.muted ? "/wyciszona" : "") + " (" + lt.label + ")" : "brak"}` });
+  } catch (e) { log("stats: " + e); }
+  statsLoop();
+}
+
 // ---------------------------------------------------------------- negocjacja
 async function makeOffer() {
   const o = await pc.createOffer();
@@ -170,7 +291,7 @@ async function onSig(data) {
 
 // ---------------------------------------------------------------- polecenia programu
 async function init(m) {
-  role = m.role; opts = m.opts || {};
+  role = m.role; opts = m.opts || {}; dv = m.devices || {};
   $("peerName").textContent = m.peerName || "";
   $("chip").textContent = m.peerName || "";
   const av = $("avatar");
@@ -183,8 +304,9 @@ async function init(m) {
   hasLocalVideo = localStream.getVideoTracks().length > 0;
   const hasAudio = localStream.getAudioTracks().length > 0;
   if (hasLocalVideo) { $("local").srcObject = localStream; $("local").style.display = "block"; }
-  post({ type: "media", video: hasLocalVideo, audio: hasAudio, wantedVideo: !!m.video });
-  if (!hasAudio) setNotice("Nie wykryto mikrofonu. Druga osoba Cię nie usłyszy, ale Ty ją usłyszysz.");
+  post({ type: "media", video: hasLocalVideo, audio: hasAudio, wantedVideo: !!m.video, videoError: localStream.videoError || "" });
+  if (!hasAudio) setNotice("Nie wykryto mikrofonu. Druga osoba Cię nie usłyszy, ale Ty ją usłyszysz.", 12000);
+  else if (m.video && !hasLocalVideo) setNotice("Nie udało się włączyć kamery (jest używana przez inny program albo jej nie ma). Druga osoba nie zobaczy Twojego obrazu, ale Ty ją zobaczysz.", 12000);
   createPeer(m.ice);
   post({ type: "peer-ready" });
 }
@@ -198,6 +320,7 @@ host && host.addEventListener("message", async (e) => {
     case "start": if (pc && !started) { started = true; setStatus("Łączę…"); await makeOffer(); } break;
     case "answering": setStatus("Łączę…"); break;
     case "sig": await onSig(m.data); break;
+    case "devices": await applyDevices(m); break;
     case "close":
       try { clearTimeout(restartTimer); clearTimeout(disconnectTimer); } catch (e2) { /* */ }
       if (pc) pc.close(); pc = null;

@@ -58,3 +58,16 @@ function New-InstallCode([string]$Server, [string]$Key, [string]$Id) {
     $json = ConvertTo-Json -InputObject ([ordered]@{ s = $Server; k = $Key; i = $Id }) -Compress
     'PGG1.' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
+
+# Zapisuje sekrety Workera z pliku tymczasowego (wrangler secret bulk). Wysyłanie przez potok (stdin) w PowerShell 5.1
+# potrafi uszkodzić wartość, więc nie jest używane. Plik tymczasowy jest usuwany zaraz po użyciu.
+function Send-Secrets([hashtable]$Secrets) {
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ('pgg-secrets-' + [Guid]::NewGuid().ToString('N') + '.json')
+    try {
+        $pairs = foreach ($k in $Secrets.Keys) { (ConvertTo-Json -InputObject ([string]$k) -Compress) + ':' + (ConvertTo-Json -InputObject ([string]$Secrets[$k]) -Compress) }
+        [IO.File]::WriteAllText($tmp, '{' + ($pairs -join ',') + '}', (New-Object Text.UTF8Encoding($false)))
+        Invoke-Wrangler secret bulk $tmp
+        if ($LASTEXITCODE -ne 0) { throw 'Nie udało się zapisać sekretów.' }
+    }
+    finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+}

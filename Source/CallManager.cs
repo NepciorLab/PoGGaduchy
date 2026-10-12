@@ -231,6 +231,8 @@ public sealed class CallManager : Observable
         State = CallState.Connecting;
         _accepted = true;
         var cid = _cid;
+        await Task.Delay(300);        // okno "Dzwoni" ma chwilę, żeby całkiem zniknąć, zanim powstanie okno rozmowy
+        if (_cid != cid) return;
         if (!await OpenCallWindow())
         {
             if (_cid == cid) FailWindow(sendEnd: true);

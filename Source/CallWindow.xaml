@@ -5,7 +5,7 @@
         Icon="Assets/app.ico" Title="PoGGaduchy – rozmowa"
         WindowStyle="None" WindowState="Maximized" ResizeMode="NoResize" Background="#0B1B2B" FontFamily="Segoe UI">
     <Grid>
-        <wv2:WebView2 x:Name="Web" Visibility="Hidden"/>
+        <wv2:WebView2 x:Name="Web"/>
 
         <!-- Gdy nie da się uruchomić strony rozmowy (np. brak składnika WebView2) -->
         <Grid x:Name="ErrorPanel" Visibility="Collapsed">

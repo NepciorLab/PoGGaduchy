@@ -101,6 +101,17 @@ try {
     Start-Sleep -Seconds 5
     Save-Screen (Join-Path $shots "e2e-$Scenario-4-call.png")
 
+    # co naprawdę widać na ekranie (a nie tylko w stronie): każde okno rozmowy po kolei na wierzchu, drugie zminimalizowane
+    foreach ($pair in @(@($a, $b), @($b, $a))) {
+        $front = $pair[0]; $other = $pair[1]
+        Set-WindowState $other.Proc.Id Minimized; Start-Sleep -Milliseconds 700; Bring-ToFront $front.Proc.Id; Start-Sleep -Milliseconds 1200
+        $p = Join-Path $shots ("e2e-$Scenario-screen-" + $front.Id + ".png")
+        Save-Screen $p
+        $n = Get-DistinctColors $p
+        Check ($n -gt 3) ("na ekranie widać okno rozmowy " + $front.Id + " (różnych kolorów: $n; jednolite tło = pusty ekran)")
+    }
+    Set-WindowState $b.Proc.Id Normal; Set-WindowState $a.Proc.Id Normal; Start-Sleep -Milliseconds 800
+
     if ($Scenario -eq 'settings') {
         # ustawienia dostępne w trakcie rozmowy: przytrzymanie przycisku na stronie rozmowy otwiera okno ustawień na wierzchu
         Set-WindowState $b.Proc.Id Minimized; Start-Sleep -Milliseconds 600; Bring-ToFront $a.Proc.Id
@@ -138,6 +149,8 @@ try {
         }
         Set-WindowState $b.Proc.Id Normal; Start-Sleep -Seconds 1
     }
+    $nFresh = Get-DistinctColors (Join-Path $shots "e2e-$Scenario-4-call.png")
+    Check ($nFresh -gt 3) "zaraz po połączeniu, bez ruszania oknami, na ekranie widać rozmowę (różnych kolorów: $nFresh)"
     $scr = [Windows.Forms.Screen]::PrimaryScreen.Bounds
     foreach ($i in $a, $b) {
         $cw = Get-TopWindows $i.Proc.Id | Where-Object { $_.Current.Name -like '*rozmowa*' } | Select-Object -First 1

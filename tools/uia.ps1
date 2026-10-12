@@ -133,3 +133,13 @@ function Get-RootAt([int]$X, [int]$Y) {
     $sb = New-Object Text.StringBuilder 256; [void][PggNative]::GetWindowText($h, $sb, 256)
     [pscustomobject]@{ Handle = $h; Title = $sb.ToString() }
 }
+
+# Czy obraz zrzutu ekranu coś pokazuje? Próbkuje siatkę punktów; jednolity kolor (np. samo tło okna) = pusty ekran.
+function Get-DistinctColors([string]$Path, [int]$Step = 60) {
+    $bmp = [Drawing.Bitmap]::FromFile($Path)
+    try {
+        $set = New-Object System.Collections.Generic.HashSet[int]
+        for ($y = 5; $y -lt $bmp.Height; $y += $Step) { for ($x = 5; $x -lt $bmp.Width; $x += $Step) { $c = $bmp.GetPixel($x, $y); [void]$set.Add(([int]($c.R / 8) * 1024 + [int]($c.G / 8) * 32 + [int]($c.B / 8))) } }
+        return $set.Count
+    } finally { $bmp.Dispose() }
+}

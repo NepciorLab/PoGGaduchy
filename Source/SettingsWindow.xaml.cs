@@ -146,6 +146,8 @@ public partial class SettingsWindow : Window
             core.WebMessageReceived += OnDeviceMessage;
             core.Navigate(WebViewHost.Origin + "/devices.html");
             DeviceView.Visibility = Visibility.Visible;
+            // jak w oknie rozmowy: po pokazaniu ukrytej kontrolki wymuszamy ponowne ułożenie (inaczej WebView2 bywa pusty)
+            DeviceView.Margin = new Thickness(0, 0, 1, 1); DeviceView.UpdateLayout(); DeviceView.Margin = new Thickness(0); DeviceView.UpdateLayout();
             DeviceStatus.Text = "Szukam urządzeń…";
         }
         catch (Exception ex)

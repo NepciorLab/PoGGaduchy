@@ -30,6 +30,7 @@ public partial class CallWindow : Window
         try
         {
             var env = await WebViewHost.GetEnvironmentAsync();
+            Web.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0x0B, 0x1B, 0x2B);     // bez białego błysku przed załadowaniem strony
             await Web.EnsureCoreWebView2Async(env);
             var core = Web.CoreWebView2;
             WebViewHost.Attach(core);
@@ -38,8 +39,12 @@ public partial class CallWindow : Window
                 try { PageMessage?.Invoke(JsonDocument.Parse(e.WebMessageAsJson).RootElement.Clone()); }
                 catch (Exception ex) { Log.Write("Wiadomość ze strony: " + ex.Message); }
             };
+            // Okno rozmowy bywa tworzone zaraz po innym pełnoekranowym oknie (np. komunikacie "Dzwoni"); wtedy WebView2 potrafi
+            // zostać pusty na ekranie, mimo że strona działa (brak przycisków i obrazu). Po załadowaniu strony wymuszamy więc
+            // ponowne ułożenie kontrolki (przesunięcie o 1 piksel i z powrotem) – bez migotania.
+            core.NavigationCompleted += async (_, _) => { foreach (var ms in new[] { 250, 600, 1500 }) { await Task.Delay(ms); RefreshLayout(); } };
             core.Navigate(WebViewHost.Origin + "/call.html");
-            Web.Visibility = Visibility.Visible;
+            RefreshLayout();
             return true;
         }
         catch (Exception ex)
@@ -48,6 +53,16 @@ public partial class CallWindow : Window
             ShowError("Do rozmów wideo potrzebny jest składnik Microsoft Edge WebView2. Program spróbuje go przygotować; jeśli to się nie uda, trzeba go zainstalować.");
             return false;
         }
+    }
+
+    /// <summary>Wymusza ponowne ułożenie kontrolki WebView2 w oknie (patrz komentarz przy NavigationCompleted).</summary>
+    void RefreshLayout()
+    {
+        if (!IsLoaded) return;
+        Web.Margin = new Thickness(0, 0, 1, 1);
+        Web.UpdateLayout();
+        Web.Margin = new Thickness(0);
+        Web.UpdateLayout();
     }
 
     public void Post(object message)

@@ -105,6 +105,13 @@ Pliki `kod-instalacji.txt` zawierają **tajne klucze** – przekazuj je tylko w�
 
 ### 3. Program na komputerze osoby
 
+**Najprościej – ręczne kopiowanie**: program to jeden plik, a tożsamość osoby to plik `kod-instalacji.txt` obok niego. Skopiuj
+na komputer osoby dwa pliki do jednego folderu (np. pendrive'em, `PoGGaduchy.exe` z [wydania](../../releases) lub z własnego
+`build.cmd`, oraz `instalacje<id>kod-instalacji.txt` tej osoby) i uruchom `PoGGaduchy.exe`. Ten sam plik `.exe` można dać
+wszystkim, różni się tylko `kod-instalacji.txt`.
+
+Albo użyj skryptu, który składa gotowy folder i zip (z lokalnym plikiem albo z najnowszego wydania na GitHubie):
+
 ```powershell
 .\tools\przygotuj-kopie.ps1 -Id mama      # składa folder i zip: PoGGaduchy.exe + kod-instalacji.txt
 ```

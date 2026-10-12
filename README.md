@@ -107,14 +107,17 @@ Pliki `kod-instalacji.txt` zawierają **tajne klucze** – przekazuj je tylko w�
 
 **Najprościej – ręczne kopiowanie**: program to jeden plik, a tożsamość osoby to plik `kod-instalacji.txt` obok niego. Skopiuj
 na komputer osoby dwa pliki do jednego folderu (np. pendrive'em, `PoGGaduchy.exe` z [wydania](../../releases) lub z własnego
-`build.cmd`, oraz `instalacje<id>kod-instalacji.txt` tej osoby) i uruchom `PoGGaduchy.exe`. Ten sam plik `.exe` można dać
+`build.cmd`, oraz `instalacje\<id>\kod-instalacji.txt` tej osoby) i uruchom `PoGGaduchy.exe`. Ten sam plik `.exe` można dać
 wszystkim, różni się tylko `kod-instalacji.txt`.
 
 Albo użyj skryptu, który składa gotowy folder i zip (z lokalnym plikiem albo z najnowszego wydania na GitHubie):
 
 ```powershell
-.\tools\przygotuj-kopie.ps1 -Id mama      # składa folder i zip: PoGGaduchy.exe + kod-instalacji.txt
+.\tools\przygotuj-kopie.ps1 -Id mama -Exe .\PoGGaduchy.exe   # z własnego pliku (bez GitHuba)
+.\tools\przygotuj-kopie.ps1 -Id mama                         # z najnowszego wydania na GitHubie (wymaga gh)
 ```
+
+Wynik: `dist\kopie\mama\` i `dist\kopie\PoGGaduchy-mama.zip`.
 
 Na komputerze osoby: rozpakuj zip w dowolnym folderze i uruchom `PoGGaduchy.exe` (nie wymaga instalowania .NET). Program
 sam wpisze się do autostartu Windows. Osoby z serwera pojawiają się na kafelkach automatycznie; nazwy i zdjęcia

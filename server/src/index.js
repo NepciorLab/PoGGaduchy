@@ -149,7 +149,8 @@ export default {
 
     const me = await authenticate(request, env);
     if (!me) return failed(401, "Unauthorized");
-    const admin = request.headers.has("X-Admin-Key") ? await isAdmin(request, env) : false;
+    // Konto NEW (niezaakceptowane) nigdy nie dostaje uprawnień administratora, nawet z poprawnym tekstem Admin.PMa.
+    const admin = request.headers.has("X-Admin-Key") && me.status !== "pending" ? await isAdmin(request, env) : false;
     if (request.headers.has("X-Admin-Key") && !admin && url.pathname !== "/api/status" && url.pathname !== "/ws") return failed(403, "Forbidden");
 
     if (url.pathname === "/api/status") {

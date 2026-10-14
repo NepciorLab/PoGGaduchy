@@ -3,6 +3,8 @@ name: Release
 # Wydanie powstaje po wypchnięciu tagu, np.:  git tag v1.2.0 && git push origin v1.2.0
 # Program sprawdza najnowsze wydanie i pobiera plik PoGGaduchy-<wersja>-win-x64.zip razem z sumą SHA-256
 # (PoGGaduchy-<wersja>-win-x64.zip.sha256), patrz Source/UpdateService.cs.
+# Podpis autora (.zip.sig) dodaje się PO wydaniu, lokalnie: tools\podpisz-wydanie.ps1 -Wersja <wersja>
+# (klucz prywatny celowo nie jest sekretem GitHuba - inaczej przejęcie konta pozwoliłoby podpisać dowolny plik).
 on:
   push:
     tags: ['v*']

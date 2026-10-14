@@ -172,6 +172,15 @@ Program co kilka godzin pyta GitHub o najnowsze wydanie repozytorium zapisanego 
 `.sha256` wydania lub z sumy podanej przez GitHub; bez sumy aktualizacja nie jest instalowana). Plik musi pochodzić z
 `github.com` / `githubusercontent.com` (HTTPS) i być programem (`MZ`).
 
+**Podpis autora (od wersji 1.2.0).** Suma SHA-256 chroni przed uszkodzeniem pliku, ale nie przed podmianą wydania przez
+kogoś, kto przejąłby konto GitHub. Dlatego każde wydanie ma też plik `.zip.sig`: podpis ECDSA P-256 tekstu
+„wersja + SHA-256 pliku zip”. Klucz **publiczny** jest wbudowany w program (`Source/Assets/update-public-key.txt`), klucz
+**prywatny** (zaszyfrowany hasłem) ma tylko autor i nie leży w repozytorium. Program bez poprawnego podpisu nie instaluje
+aktualizacji. Wersje starsze niż 1.2.0 podpisu nie sprawdzają.
+
+Jednorazowo: `tools\generuj-klucz-podpisu.ps1` (utworzy klucze; prywatny zapisz w menedżerze haseł razem z hasłem; po utracie
+klucza programy trzeba zaktualizować ręcznie nowym plikiem `.exe`).
+
 W Ustawieniach (grupa „Program”) są dwie niezależne opcje:
 
 * **Sprawdzaj i pobieraj aktualizacje automatycznie** – wyłączenie zatrzymuje sprawdzanie (zostaje przycisk „Sprawdź teraz”).
@@ -188,6 +197,13 @@ git push origin v1.2.0
 
 Workflow [`release.yml`](.github/workflows/release.yml) zbuduje program (numer wersji bierze z tagu), spakuje do
 `PoGGaduchy-1.2.0-win-x64.zip`, doda sumę `.sha256` i opublikuje wydanie (z informacją o udziale AI w opisie).
+Potem podpisz wydanie na swoim komputerze (podasz hasło do klucza):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\podpisz-wydanie.ps1 -Wersja 1.2.0
+```
+
+Do czasu dodania podpisu programy pomijają to wydanie i sprawdzą je ponownie przy następnej okazji.
 
 ## Gdzie są ustawienia
 

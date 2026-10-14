@@ -21,6 +21,8 @@
     <Resource Include="Assets\app.ico" />
     <EmbeddedResource Include="Web\call.html" LogicalName="Web.call.html" />
     <EmbeddedResource Include="Web\devices.html" LogicalName="Web.devices.html" />
+    <!-- Klucz publiczny do sprawdzania podpisów wydań (tworzy go tools\generuj-klucz-podpisu.ps1). Bez niego program nie instaluje aktualizacji. -->
+    <EmbeddedResource Include="Assets\update-public-key.txt" LogicalName="update-public-key.txt" Condition="Exists('Assets\update-public-key.txt')" />
   </ItemGroup>
 
   <ItemGroup>

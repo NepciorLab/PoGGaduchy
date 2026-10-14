@@ -9,12 +9,14 @@ using System.Text.RegularExpressions;
 
 namespace PoGGaduchy;
 
-public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string DownloadUrl, string? Sha256, string? Sha256Url, string PageUrl);
+public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string DownloadUrl, string? Sha256, string? Sha256Url, string SigUrl, string PageUrl);
 
 /// <summary>
 /// Aktualizacje z wydań (GitHub Releases) repozytorium <see cref="AppInfo.Repository"/>.
 /// Przepis na wydanie: tag "vX.Y.Z" + plik "PoGGaduchy-X.Y.Z-win-x64.zip" (z PoGGaduchy.exe w środku) i plik sumy
 /// "PoGGaduchy-X.Y.Z-win-x64.zip.sha256". Bez sumy SHA-256 (z GitHuba lub z pliku .sha256) aktualizacja nie jest instalowana.
+/// Dodatkowo wymagany jest podpis autora "PoGGaduchy-X.Y.Z-win-x64.zip.sig" (patrz <see cref="UpdateSignature"/>): suma chroni
+/// przed uszkodzeniem pliku, podpis przed podmianą wydania przez kogoś, kto przejąłby konto GitHub.
 /// Dopóki w repozytorium nie ma żadnego wydania, sprawdzanie kończy się po cichu.
 /// </summary>
 public static class UpdateService
@@ -49,12 +51,13 @@ public static class UpdateService
         if (!Version.TryParse(tag.TrimStart('v', 'V'), out var version)) { Log.Write("Aktualizacje: nieznany format tagu " + tag); return null; }
         if (version <= Normalize(AppInfo.Version)) return null;
 
-        JsonElement? zip = null, sum = null;
+        JsonElement? zip = null, sum = null, sig = null;
         foreach (var a in root.GetProperty("assets").EnumerateArray())
         {
             var name = a.GetProperty("name").GetString() ?? "";
             if (ZipAsset.IsMatch(name)) zip = a;
             else if (name.EndsWith(".zip.sha256", StringComparison.OrdinalIgnoreCase)) sum = a;
+            else if (name.EndsWith(".zip.sig", StringComparison.OrdinalIgnoreCase)) sig = a;
         }
         if (zip is not { } asset) { Log.Write("Aktualizacje: wydanie " + tag + " nie ma pasującego pliku."); return null; }
 
@@ -67,7 +70,12 @@ public static class UpdateService
         if (sum is { } s && s.GetProperty("browser_download_url").GetString() is { } su && IsTrustedUrl(su)) shaUrl = su;
         if (sha == null && shaUrl == null) { Log.Write("Aktualizacje: wydanie " + tag + " nie ma sumy SHA-256, pomijam."); return null; }
 
-        return new UpdateInfo(version, tag, asset.GetProperty("name").GetString() ?? "", download, sha, shaUrl,
+        // Podpis dodaje autor po zbudowaniu wydania, więc przez chwilę może go brakować: wtedy sprawdzimy ponownie przy następnej okazji.
+        if (UpdateSignature.EmbeddedKey() == null) { Log.Write("Aktualizacje: program nie ma klucza publicznego do sprawdzania podpisów, pomijam."); return null; }
+        if (sig is not { } sg || sg.GetProperty("browser_download_url").GetString() is not { } sigUrl || !IsTrustedUrl(sigUrl))
+        { Log.Write("Aktualizacje: wydanie " + tag + " nie ma podpisu autora (jeszcze), pomijam."); return null; }
+
+        return new UpdateInfo(version, tag, asset.GetProperty("name").GetString() ?? "", download, sha, shaUrl, sigUrl,
             root.TryGetProperty("html_url", out var h) ? h.GetString() ?? "" : "");
     }
 
@@ -102,12 +110,18 @@ public static class UpdateService
                 expected = Regex.Match(text, "[0-9a-fA-F]{64}").Value;
             }
             if (string.IsNullOrEmpty(expected)) throw new InvalidOperationException("Brak sumy kontrolnej wydania.");
+            string actual;
             await using (var fs = File.OpenRead(tmp))
             {
-                var actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct));
+                actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct));
                 if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Suma kontrolna pobranego pliku się nie zgadza.");
             }
+
+            var signature = await Http.GetStringAsync(info.SigUrl, ct);
+            var v = info.Version;
+            if (!UpdateSignature.Verify(UpdateSignature.EmbeddedKey(), $"{v.Major}.{v.Minor}.{Math.Max(0, v.Build)}", actual, signature))
+                throw new InvalidOperationException("Podpis autora wydania jest nieprawidłowy, odrzucam aktualizację.");
 
             if (File.Exists(NewPath)) File.Delete(NewPath);
             using (var zip = ZipFile.OpenRead(tmp))
